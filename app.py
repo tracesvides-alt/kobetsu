@@ -14,13 +14,35 @@ try:
     import google.generativeai as genai
     GENAI_AVAILABLE = True
     
-    # APIキーの読み込みと設定
+    # APIキーの取得優先順位: 1. Streamlit Secrets, 2. 環境変数, 3. ローカルのAPI.txt
+    api_key = None
+    
+    # Streamlit Secrets (Cloud環境・ローカルの .streamlit/secrets.toml)
     try:
-        with open("API.txt", "r") as f:
-            api_key = f.read().strip()
+        if "GEMINI_API_KEY" in st.secrets:
+            api_key = st.secrets["GEMINI_API_KEY"]
+    except Exception:
+        pass
+        
+    # 環境変数
+    if not api_key and os.environ.get("GEMINI_API_KEY"):
+        api_key = os.environ["GEMINI_API_KEY"]
+        
+    # ローカルファイル
+    if not api_key:
+        try:
+            with open("API.txt", "r") as f:
+                api_key = f.read().strip()
+        except Exception:
+            pass
+            
+    # APIキーが設定されたか確認
+    if api_key:
         genai.configure(api_key=api_key)
-    except Exception as e:
-        print(f"Gemini API Key Config Error: {e}")
+    else:
+        GENAI_AVAILABLE = False
+        print("Gemini API Key not found. AI features will be disabled.")
+        
 except ImportError:
     GENAI_AVAILABLE = False
 
