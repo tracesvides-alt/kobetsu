@@ -290,33 +290,22 @@ def to_millions(series: pd.Series) -> pd.Series:
 
 
 @st.cache_data(ttl=86400)
-def stable_translate(text: str) -> str:
-    """AIを使わず、MyMemory APIを使用して日本語に翻訳する。文字数制限(500字)を回避するため分割処理を行う。"""
+def translate_to_japanese(text: str) -> str:
+    """AIを使わず、Google Translate の無料API経由で日本語に翻訳する。"""
     if not text:
         return ""
-
-    # 500文字ずつに分割
-    chunk_size = 450  # 余裕を持って450文字
-    chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
-    
-    translated_chunks = []
-    
-    for chunk in chunks:
-        try:
-            url = f"https://api.mymemory.translated.net/get?q={chunk}&langpair=en|ja"
-            response = requests.get(url, timeout=10)
-            data = response.json()
-            translated = data.get("responseData", {}).get("translatedText")
-            
-            if translated and translated != chunk:
-                # API特有のHTML実体参照などを修復（必要に応じて）
-                translated_chunks.append(translated)
-            else:
-                translated_chunks.append(chunk)
-        except Exception:
-            translated_chunks.append(chunk)
-            
-    return " ".join(translated_chunks)
+        
+    try:
+        import urllib.parse
+        encoded_text = urllib.parse.quote(text)
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ja&dt=t&q={encoded_text}"
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        translated = "".join([d[0] for d in data[0] if d[0]])
+        return translated
+    except Exception as e:
+        print(f"Translation Error: {e}")
+        return text # 失敗時は原文を返す
 
 
 # セクターETFマッピング
@@ -666,34 +655,13 @@ def generate_ai_swot(data: dict) -> dict:
 
 
 @st.cache_data(ttl=86400)
-def summarize_business(summary_text: str) -> str:
+def get_translated_summary(summary_text: str) -> str:
+    """事業概要をAIなしで安定して日本語に翻訳する。"""
+    if not summary_text:
+        return "事業概要のデータがありません。"
 
-    """事業概要を日本語に翻訳し、3行で要約する。"""
-    if not GENAI_AVAILABLE or not summary_text:
-        return summary_text or "事業概要のデータがありません。"
-
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash-latest")
-        prompt = f"""
-        以下の企業の事業概要（英語）を日本語に翻訳し、その内容を「3行程度の簡潔な箇条書き」で要約してください。
-        
-        【条件】
-        - 専門用語は適切に日本語に直してください。
-        - 箇条書きの形式で出力してください。
-        - 企業の核となるビジネスモデルや主要製品、強みがわかるようにしてください。
-
-        事業概要:
-        {summary_text}
-        """
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        # AIが404エラーなどの場合に外部翻訳ツール(MyMemory)へフォールバック
-        print(f"AI Summary Error (Falling back to translation): {e}")
-        translated = stable_translate(summary_text)
-        if translated:
-            return f"※AI要約の代わりに外部翻訳を表示しています：\n\n{translated}"
-        return f"翻訳に失敗しました: {str(e)}"
+    translated = translate_to_japanese(summary_text)
+    return translated
 
 
 
@@ -2124,9 +2092,9 @@ if ticker:
         # 1. 基本情報
         with tab_basic:
             st.divider()
-            st.markdown('<div class="section-title">🏢 事業内容要約 (AI Summary)</div>', unsafe_allow_html=True)
-            with st.spinner("事業概要を整理中..."):
-                summary = summarize_business(data.get("long_summary", ""))
+            st.markdown('<div class="section-title">🏢 事業紹介 (日本語訳)</div>', unsafe_allow_html=True)
+            with st.spinner("事業概要を翻訳中..."):
+                summary = get_translated_summary(data.get("long_summary", ""))
                 st.markdown(f'<div class="ai-report">{summary}</div>', unsafe_allow_html=True)
             
             st.divider()
@@ -2318,27 +2286,30 @@ if ticker:
                     col_top1, col_top2, col_top3, col_top4 = st.columns(4)
                     
                     # 売上成長率1位
-                    top_rev_idx = peers_df["売上成長率(%)"].idxmax()
-                    if pd.notna(top_rev_idx):
+                    valid_rev = peers_df["売上成長率(%)"].dropna()
+                    if not valid_rev.empty:
+                        top_rev_idx = valid_rev.idxmax()
                         top_rev = peers_df.loc[top_rev_idx]
                         col_top1.metric("🥇 売上成長率", top_rev["ティッカー"], f"{top_rev['売上成長率(%)']:.1f}%")
                     
                     # 営業利益率1位
-                    top_margin_idx = peers_df["営業利益率(%)"].idxmax()
-                    if pd.notna(top_margin_idx):
+                    valid_margin = peers_df["営業利益率(%)"].dropna()
+                    if not valid_margin.empty:
+                        top_margin_idx = valid_margin.idxmax()
                         top_margin = peers_df.loc[top_margin_idx]
                         col_top2.metric("🥇 営業利益率", top_margin["ティッカー"], f"{top_margin['営業利益率(%)']:.1f}%")
                     
                     # PER最安（0以下を除外）
-                    valid_pe = peers_df[peers_df["PER"] > 0]["PER"]
+                    valid_pe = peers_df[peers_df["PER"] > 0]["PER"].dropna()
                     if not valid_pe.empty:
                         top_pe_idx = valid_pe.idxmin()
                         top_pe = peers_df.loc[top_pe_idx]
-                        col_top3.metric("🥇 PER（最割安）", top_pe["ティッカー"], f"{top_pe['PER']:.1f}x")
+                        col_top3.metric("🥇 PER（最安）", top_pe["ティッカー"], f"{top_pe['PER']:.1f}x")
                     
                     # 配当利回り1位
-                    top_div_idx = peers_df["配当利回り(%)"].idxmax()
-                    if pd.notna(top_div_idx):
+                    valid_div = peers_df["配当利回り(%)"].dropna()
+                    if not valid_div.empty:
+                        top_div_idx = valid_div.idxmax()
                         top_div = peers_df.loc[top_div_idx]
                         col_top4.metric("🥇 配当利回り", top_div["ティッカー"], f"{top_div['配当利回り(%)']:.2f}%")
                     
