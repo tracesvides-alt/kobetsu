@@ -6,6 +6,7 @@ import random
 import requests
 import json
 import streamlit as st
+
 import yfinance as yf
 
 import plotly.graph_objects as go
@@ -14,7 +15,7 @@ import pandas as pd
 from datetime import datetime
 
 try:
-    import google.generativeai as genai
+    from google import genai
     GENAI_AVAILABLE = True
     
     # APIキーの取得優先順位: 1. Streamlit Secrets, 2. 環境変数, 3. ローカルのAPI.txt
@@ -39,9 +40,9 @@ try:
         except Exception:
             pass
             
-    # APIキーが設定されたか確認
+    # APIクライアントの設定
     if api_key:
-        genai.configure(api_key=api_key)
+        AI_CLIENT = genai.Client(api_key=api_key)
     else:
         GENAI_AVAILABLE = False
         print("Gemini API Key not found. AI features will be disabled.")
@@ -596,16 +597,17 @@ def translate_only(text: str) -> str:
         return text or "データがありません。"
 
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash-latest")
-        prompt = f"""
-        以下の文章（英語）を、意味を損なわないように自然な日本語に翻訳してください。
-        要約はせず、元の内容をすべて含めてください。
-        日本語のみで出力してください。
+        response = AI_CLIENT.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=f"""
+            以下の文章（英語）を、意味を損なわないように自然な日本語に翻訳してください。
+            要約はせず、元の内容をすべて含めてください。
+            日本語のみで出力してください。
 
-        文章:
-        {text}
-        """
-        response = model.generate_content(prompt)
+            文章:
+            {text}
+            """
+        )
         return response.text
     except Exception as e:
         return f"翻訳に失敗しました: {str(e)}"
@@ -618,8 +620,6 @@ def generate_ai_swot(data: dict) -> dict:
         return None
 
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash-latest")
-        
         # 財務指标の成型
         metrics_summary = f"""
         - 売上成長率: {fmt_percent(data.get('revenue_growth'))}
@@ -648,7 +648,10 @@ def generate_ai_swot(data: dict) -> dict:
         }}
         """
         
-        response = model.generate_content(prompt)
+        response = AI_CLIENT.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=prompt
+        )
         # JSON部分を抽出 (稀にAIが説明文をつけてしまうのを防ぐ)
         clean_json = response.text[response.text.find("{"):response.text.rfind("}")+1]
         return json.loads(clean_json)
@@ -706,8 +709,12 @@ def fetch_stock_data(ticker: str) -> dict | None:
             "total_cash": info.get("total_cash", 0),
             "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
             "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
-            # SWOT分析用に追加
+            # 理論株価・分析用
+            "eps_trailing": info.get("trailingEps"),
+            "eps_forward": info.get("forwardEps"),
+            "eps_growth": info.get("earningsGrowth"),
             "revenue_growth": info.get("revenueGrowth"),
+            "beta": info.get("beta"),
             "profit_margins": info.get("profitMargins"),
             "debt_to_equity": info.get("debtToEquity"),
             "operating_margins": info.get("operatingMargins"),
@@ -981,6 +988,16 @@ def fetch_advanced_financials(ticker: str) -> dict | None:
                     if pd.notna(val):
                         fcf_dates.append(d.strftime("%Y"))
                         fcf_list.append(val / 1_000_000) # 百万ドル単位
+            else:
+                # フォールバック: 営業CF + 設備投資額
+                if "Operating Cash Flow" in recent_cf.columns and "Capital Expenditure" in recent_cf.columns:
+                    for d in recent_cf.index:
+                        ocf = recent_cf.loc[d, "Operating Cash Flow"]
+                        capex = recent_cf.loc[d, "Capital Expenditure"]
+                        if pd.notna(ocf) and pd.notna(capex):
+                            fcf_dates.append(d.strftime("%Y"))
+                            # yfinanceではCapExは通常負の値なので、加算することで差し引きになる
+                            fcf_list.append((ocf + capex) / 1_000_000)
 
         res["FCF Dates"] = fcf_dates
         res["FCF Values"] = fcf_list
@@ -994,33 +1011,40 @@ def fetch_advanced_financials(ticker: str) -> dict | None:
 
 
 
-def calculate_dcf(base_fcf: float, growth_rate: float, wacc: float, shares: float, total_debt: float, total_cash: float, term_growth: float = 0.02) -> float | None:
-    """DCFによる理論株価を計算する。"""
+def calculate_earnings_valuation(base_eps: float, growth_rate: float, horizon_years: int, target_pe: float, discount_rate: float = 0.08) -> dict | None:
+    """利益ベースの理論株価を計算する（累積利益 + 未来の期待価値を現在価値に割引）。"""
     try:
-        if any(v is None or pd.isna(v) for v in [base_fcf, growth_rate, wacc, shares, total_debt]):
+        if any(v is None or pd.isna(v) for v in [base_eps, growth_rate, target_pe, discount_rate]):
             return None
         
-        if shares <= 0 or wacc <= term_growth:
+        if base_eps <= 0:
             return None
             
-        pv_fcf = 0
-        current_fcf = base_fcf
+        accumulated_pv = 0
+        current_eps = base_eps
         
-        # 1〜5年目のFCFの現在価値
-        for t in range(1, 6):
-            current_fcf = current_fcf * (1 + growth_rate)
-            pv_fcf += current_fcf / ((1 + wacc) ** t)
+        # 指定期間の利益を積み上げ & 現在価値に割引
+        for t in range(1, horizon_years + 1):
+            current_eps *= (1 + growth_rate)
+            # 各年の利益を現在価値に割り戻す
+            pv_eps = current_eps / ((1 + discount_rate) ** t)
+            accumulated_pv += pv_eps
             
-        fcf_5 = current_fcf
-        tv = fcf_5 * (1 + term_growth) / (wacc - term_growth)
-        pv_tv = tv / ((1 + wacc) ** 5)
+        # 最終年の期待株価 (EPS * PER)
+        expected_price_future = current_eps * target_pe
+        # 期待株価を現在価値に割り戻す
+        expected_price_pv = expected_price_future / ((1 + discount_rate) ** horizon_years)
         
-        ev = pv_fcf + pv_tv
-        equity_val = ev + total_cash - total_debt
+        # 合計の現在価値（＝理論上の適正株価）
+        total_intrinsic_value = accumulated_pv + expected_price_pv
         
-        intrinsic_value = equity_val / shares
-        
-        return intrinsic_value if intrinsic_value > 0 else 0.0
+        return {
+            "accumulated_profit": accumulated_pv, # 現在価値ベースの累積利益
+            "expected_price": expected_price_pv,  # 現在価値ベースの期待価格
+            "total_value": total_intrinsic_value,
+            "final_eps": current_eps,
+            "future_price": expected_price_future
+        }
     except Exception:
         return None
 
@@ -1579,6 +1603,7 @@ def fetch_analyst_data(ticker: str) -> dict:
     except Exception:
         return {}
 
+@st.cache_data(ttl=86400)
 def fetch_peers_data(target_ticker: str, peers: list) -> pd.DataFrame | None:
     """ターゲットと競合の財務比較データを取得する"""
     tickers = [target_ticker] + peers
@@ -1586,6 +1611,9 @@ def fetch_peers_data(target_ticker: str, peers: list) -> pd.DataFrame | None:
     
     for t in tickers:
         try:
+            # サーバー負荷軽減のため1秒待機
+            time.sleep(1)
+            
             stock = yf.Ticker(t)
             info = stock.info
             data_list.append({
@@ -2055,15 +2083,18 @@ def get_gemini_api_key() -> str | None:
 
 
 
-def call_gemini(api_key: str, system_prompt: str, user_prompt: str) -> str:
-    """Gemini API を呼び出してテキストを返す。"""
+def call_gemini(api_key_ignored: str, system_prompt: str, user_prompt: str) -> str:
+    """Gemini API を呼び出してテキストを返す (google-genai 1.0+ 対応)"""
+    if not GENAI_AVAILABLE:
+        return "AI機能が利用できません（APIキー未設定またはライブラリ不足）。"
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash-latest",
-            system_instruction=system_prompt,
+        response = AI_CLIENT.models.generate_content(
+            model="gemini-3-flash-preview",
+            config=genai.types.GenerateContentConfig(
+                system_instruction=system_prompt
+            ),
+            contents=user_prompt
         )
-        response = model.generate_content(user_prompt)
         return response.text
     except Exception as e:
         return f"Gemini Error: {str(e)}"
@@ -2181,17 +2212,87 @@ if ticker:
                 st.info("財務データが取得できませんでした。")
 
             st.divider()
-            # DCF Val
-            st.markdown('<div class="section-title">💰 理論株価 (DCF分析)</div>', unsafe_allow_html=True)
-            adv_fin = fetch_advanced_financials(ticker)
-            if adv_fin and adv_fin.get("FCF Values") and data.get("shares_outstanding"):
-                col_d1, col_d2 = st.columns(2)
-                g_rate = col_d1.slider("成長率(%)", 0, 40, 10) / 100
-                wacc = col_d2.slider("割引率(%)", 5, 15, 8) / 100
-                intrinsic = calculate_dcf(adv_fin["FCF Values"][-1]*1e6, g_rate, wacc, data["shares_outstanding"], data.get("total_debt",0), data.get("total_cash",0))
-                if intrinsic:
-                    gap = (intrinsic - data['price']) / data['price']
-                    st.metric("推定理論株価", f"${intrinsic:.2f}", f"{gap:+.1%}")
+            # 利益ベースの理論株価 (Earnings Valuation with Discounting)
+            st.markdown('<div class="section-title">💰 理論株価 (バリュエーション分析)</div>', unsafe_allow_html=True)
+            st.caption("将来の利益を『目標年利』で現在価値に割り引いた、今日の適正株価の推定値です。")
+            
+            base_eps = data.get("eps_trailing")
+            if base_eps and base_eps > 0:
+                col_v1, col_v2 = st.columns(2)
+                col_v3, col_v4 = st.columns(2)
+                
+                # 1. 想定成長率 (売上成長率を採用)
+                default_g = int(data.get("revenue_growth", 0.1) * 100) if data.get("revenue_growth") is not None else 10
+                default_g = max(0, min(50, default_g))
+                g_rate = col_v1.slider("想定成長率 (%)", 0, 50, default_g, help="今後数年間の年平均成長率のシミュレーション値") / 100
+                
+                # 2. 投資ホライズン
+                horizon = col_v2.slider("投資ホライズン (年)", 1, 20, 10, help="何年分の利益を積み上げるか")
+                
+                # 3. 期待想定PER
+                default_pe = int(data.get("pe_ratio", 20)) if data.get("pe_ratio") is not None else 20
+                default_pe = max(5, min(100, default_pe))
+                target_pe = col_v3.slider("期待想定PER", 5, 100, default_pe, help="出口時点での適正な株価収益率")
+                
+                # --- ダイナミック目標年利の算出 ---
+                # 式: 5% (Base) + Beta * 5% + EPS_Growth * 20%
+                beta = data.get("beta", 1.0) if data.get("beta") is not None else 1.0
+                eps_g = data.get("eps_growth", data.get("revenue_growth", 0.1)) if data.get("eps_growth") is not None else 0.1
+                dynamic_r = 0.05 + (beta * 0.05) + (max(0, eps_g) * 0.2)
+                default_r = int(dynamic_r * 100)
+                default_r = max(5, min(30, default_r))
+                
+                # 4. 目標年利 (期待収益率・割引率)
+                r_rate = col_v4.slider("💡 目標年利 (期待収益率) %", 5, 30, default_r, help=f"リスク(Beta:{beta:.2f})と成長性から自動算出された推奨値です。") / 100
+                # -------------------------------
+                
+                val_res = calculate_earnings_valuation(base_eps, g_rate, horizon, target_pe, r_rate)
+                
+                if val_res:
+                    total_val = val_res["total_value"]
+                    curr_price = data['price']
+                    gap = (total_val - curr_price) / curr_price
+                    
+                    # 判定ラベル
+                    if gap > 0.3:
+                        status, color = "🟢 大幅な割安 (Strong Buy)", "#10b981"
+                    elif gap > 0:
+                        status, color = "🟡 割安 (Fair)", "#f59e0b"
+                    elif gap > -0.2:
+                        status, color = "⚪ 適正 (Fair)", "#6b7280"
+                    else:
+                        status, color = "🔴 割高 (Overvalued)", "#ef4444"
+
+                    st.write("---")
+                    v_col1, v_col2 = st.columns([1, 1.5])
+                    
+                    with v_col1:
+                        st.markdown(f"""
+                        <div style="background: rgba(255,255,255,0.05); padding: 20px; border-radius: 10px; border-left: 5px solid {color};">
+                            <h4 style="margin:0; font-size: 0.8rem; color: #9ca3af;">今日の適正価格（理論株価）</h4>
+                            <h2 style="margin: 5px 0; color: #ffffff;">${total_val:.2f}</h2>
+                            <p style="margin:0; font-size: 1.1rem; color: {color}; font-weight:700;">{status}</p>
+                            <p style="margin:0; font-size: 0.9rem; color: #9ca3af;">安全域: {gap:+.1%}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    with v_col2:
+                        st.write(f"**現在の株価位置** (適正価格に対して)")
+                        progress = min(1.0, curr_price / total_val) if total_val > 0 else 0
+                        st.progress(progress)
+                        st.caption(f"現在値: ${curr_price:.2f} / 理論株価: ${total_val:.2f}")
+                        st.caption(f"※ 目標年利 {r_rate:.1%} を達成するために、今買うべき「今の価値」を算出しています。")
+
+                    st.write("<br>", unsafe_allow_html=True)
+                    with st.expander("📊 10年後の将来価値シミュレーション（割引前）"):
+                        c1, c2 = st.columns(2)
+                        c1.write(f"📂 **{horizon}年間の累積利益 (将来値)**")
+                        c1.subheader(f"${val_res['final_eps'] * horizon:.2f}") # 単純加算イメージ（実際は複利累積）
+                        c2.write(f"📈 **{horizon}年後の予測株価**")
+                        c2.subheader(f"${val_res['future_price']:.2f}")
+                        st.caption(f"※ これらの将来価値合計を、年率 {r_rate:.1%} で割り戻したものが上記の「適正価格」です。")
+            else:
+                st.warning("⚠️ 利益(EPS)が取得できない、または赤字のためバリュエーションをスキップしました。")
 
         # 3. チャート
         with tab_chart:
@@ -2449,6 +2550,20 @@ if ticker:
         with tab_ai:
             st.divider()
             st.markdown('<div class="section-title">🤖 Gemini AI 統合分析レポート</div>', unsafe_allow_html=True)
+            
+            st.info("""
+            **分析の根拠となるデータ項目:**
+            1. **財務の質** (ROE/ROIC, キャッシュフローの健全性)
+            2. **長期成長トレンド** (売上高・純利益の推移)
+            3. **理論株価** (DCF分析による妥当価格との乖離)
+            4. **競合比較ランキング** (セクター内での相対的な位置付け)
+            5. **プロの視点** (アナリストの目標株価・推奨度)
+            6. **内部関係者の動き** (インサイダー取引の履歴)
+            7. **テクニカル** (RSI・SMAトレンドの裏付け)
+            
+            これらの多角的なデータを最新の **Gemini 3** モデルが統合し、分析レポートを生成します。
+            """)
+
             api_key = get_gemini_api_key()
             if not api_key:
                 api_key = st.text_input("Gemini API Key を入力してください", type="password")
@@ -2513,22 +2628,28 @@ if ticker:
                     val_score = 50
                 else:
                     val_score = 25
-            # DCF による補正
-            if cio_adv and cio_adv.get("FCF Values") and data.get("shares_outstanding"):
+            # 新モデルによる補正
+            base_eps = data.get("eps_trailing")
+            if base_eps and base_eps > 0:
                 try:
-                    dcf_intrinsic = calculate_dcf(
-                        cio_adv["FCF Values"][-1] * 1e6, 0.10, 0.08,
-                        data["shares_outstanding"],
-                        data.get("total_debt", 0),
-                        data.get("total_cash", 0)
-                    )
-                    if dcf_intrinsic and data.get("price"):
-                        dcf_gap = (dcf_intrinsic - data["price"]) / data["price"]
-                        if dcf_gap > 0.3:
-                            val_score = min(100, val_score + 20)
-                        elif dcf_gap > 0:
+                    # デフォルト設定 (10年、売上成長率、現在のPER) で算出
+                    def_g = data.get("revenue_growth", 0.1) if data.get("revenue_growth") is not None else 0.1
+                    def_pe = data.get("pe_ratio", 20) if data.get("pe_ratio") is not None else 20
+                    
+                    # ダイナミック目標年利の適用 (CIOダッシュボード用)
+                    beta_cio = data.get("beta", 1.0) if data.get("beta") is not None else 1.0
+                    eps_g_cio = data.get("eps_growth", def_g) if data.get("eps_growth") is not None else 0.1
+                    def_r = 0.05 + (beta_cio * 0.05) + (max(0, eps_g_cio) * 0.2)
+                    
+                    val_res = calculate_earnings_valuation(base_eps, def_g, 10, def_pe, def_r)
+                    
+                    if val_res and data.get("price"):
+                        val_gap = (val_res["total_value"] - data["price"]) / data["price"]
+                        if val_gap > 0.5:
+                            val_score = min(100, val_score + 25)
+                        elif val_gap > 0:
                             val_score = min(100, val_score + 10)
-                        elif dcf_gap < -0.3:
+                        elif val_gap < -0.3:
                             val_score = max(0, val_score - 20)
                 except Exception:
                     pass
