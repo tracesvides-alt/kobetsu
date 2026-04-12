@@ -214,6 +214,60 @@ st.markdown(
         margin-bottom: 12px;
         letter-spacing: 0.04em;
     }
+    .ai-report strong {
+        color: #00d2ff;
+    }
+
+    /* 成長ドライバ・カード */
+    .growth-card {
+        display: flex;
+        align-items: center;
+        border-radius: 12px;
+        padding: 14px 22px;
+        margin-bottom: 12px;
+        transition: all 0.2s ease;
+        backdrop-filter: blur(8px);
+    }
+    .growth-card-num {
+        font-size: 1.6rem;
+        font-weight: 800;
+        margin-right: 22px;
+        min-width: 45px;
+        text-align: center;
+        opacity: 0.9;
+    }
+    .growth-card-content {
+        flex-grow: 1;
+    }
+    .growth-card-theme {
+        font-weight: 700;
+        font-size: 1.05rem;
+        margin-bottom: 3px;
+        color: #f8fafc;
+    }
+    .growth-card-impact {
+        font-size: 0.92rem;
+        color: rgba(255, 255, 255, 0.85);
+        line-height: 1.4;
+    }
+    .status-positive {
+        background: rgba(6, 78, 59, 0.4);
+        border: 1px solid rgba(16, 185, 129, 0.5);
+        box-shadow: 0 4px 15px rgba(16, 185, 129, 0.1);
+    }
+    .status-positive .growth-card-num { color: #10b981; }
+    .status-neutral {
+        background: rgba(69, 26, 3, 0.4);
+        border: 1px solid rgba(245, 158, 11, 0.5);
+        box-shadow: 0 4px 15px rgba(245, 158, 11, 0.1);
+    }
+    .status-neutral .growth-card-num { color: #f59e0b; }
+    .status-critical {
+        background: rgba(80, 7, 36, 0.4);
+        border: 1px solid rgba(236, 72, 153, 0.5);
+        box-shadow: 0 4px 15px rgba(236, 72, 153, 0.1);
+    }
+    .status-critical .growth-card-num { color: #ec4899; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -2083,6 +2137,35 @@ def get_gemini_api_key() -> str | None:
 
 
 
+
+def render_growth_driver_cards(drivers_data: list):
+    """成長ドライバをカード形式で表示する (Streamlit)"""
+    num_map = {1: "①", 2: "②", 3: "③", 4: "④", 5: "⑤", 6: "⑥", 7: "⑦"}
+    icon_map = {"positive": "◎", "neutral": "△", "critical": "⚠️"}
+    
+    html_all = ""
+    for d in drivers_data:
+        driver_id = d.get("id", 1)
+        num_icon = num_map.get(driver_id, str(driver_id))
+        status = d.get("status", "neutral")
+        icon = icon_map.get(status, "△")
+        theme = d.get("theme", "")
+        impact = d.get("impact", "")
+        
+        html_card = f"""
+        <div class="growth-card status-{status}">
+            <div class="growth-card-num">{num_icon}</div>
+            <div class="growth-card-content">
+                <div class="growth-card-theme">{theme}</div>
+                <div class="growth-card-impact">{icon} {impact}</div>
+            </div>
+        </div>
+        """
+        html_all += html_card
+        
+    st.markdown(html_all, unsafe_allow_html=True)
+
+
 def call_gemini(api_key_ignored: str, system_prompt: str, user_prompt: str) -> str:
     """Gemini API を呼び出してテキストを返す (google-genai 1.0+ 対応)"""
     if not GENAI_AVAILABLE:
@@ -2126,10 +2209,29 @@ if ticker:
         # 1. 基本情報
         with tab_basic:
             st.divider()
+            
+            # --- 成長ドライバ・データベースの読み込み ---
+            drivers_db = {}
+            db_path = os.path.join(os.path.dirname(__file__), "growth_drivers_db.json")
+            if os.path.exists(db_path):
+                try:
+                    with open(db_path, "r", encoding="utf-8") as f:
+                        drivers_db = json.load(f)
+                except Exception:
+                    pass
+            # ----------------------------------------
+
             st.markdown('<div class="section-title">🏢 事業紹介 (日本語訳)</div>', unsafe_allow_html=True)
             with st.spinner("事業概要を翻訳中..."):
                 summary = get_translated_summary(data.get("long_summary", ""))
                 st.markdown(f'<div class="ai-report">{summary}</div>', unsafe_allow_html=True)
+            
+            # --- 成長ドライバ・カード (DB対応) ---
+            if ticker in drivers_db:
+                st.write("<br>", unsafe_allow_html=True)
+                st.markdown(f"### 📈 {ticker} 主要成長ドライバ分析 (Summary)")
+                render_growth_driver_cards(drivers_db[ticker])
+            # ------------------------------------
             
             st.divider()
             col_m1, col_m2 = st.columns(2)
@@ -2561,8 +2663,24 @@ if ticker:
             6. **内部関係者の動き** (インサイダー取引の履歴)
             7. **テクニカル** (RSI・SMAトレンドの裏付け)
             
-            これらの多角的なデータを最新の **Gemini 3** モデルが統合し、分析レポートを生成します。
+            これらの多角的なデータを最新の **Gemini 2.0 Flash** モデルが統合し、分析レポートを生成します。
             """)
+            
+            # --- 成長ドライバ・カード (AVGO例) ---
+            if ticker == "AVGO":
+                st.markdown("### 📈 主要成長ドライバ分析 (Summary)")
+                avgo_drivers = [
+                    {"id": 1, "theme": "Custom AI Accelerator (XPU) の独占的拡大", "impact": "Google TPU v6/Meta MTIA等のカスタムASIC出荷が加速し、AI半導体売上は84.4億ドル（+106% YoY）を記録。主要CSPとの共同開発でMRVLに対し規模の経済で圧倒。", "status": "positive"},
+                    {"id": 2, "theme": "AIデータセンターのEthernet移行と帯域幅の飛躍", "impact": "1M GPU クラスター向けに 102.4T 帯域の Tomahawk 6 出荷開始。InfiniBandからEthernetへの主導権転換によりネットワーク事業が高成長。", "status": "positive"},
+                    {"id": 3, "theme": "接続コスト最適化としての DAC (銅線) 推進", "impact": "スケールアップ領域で光学部品コストを回避するDAC（直接接続銅線）戦略を強化。電力的・コスト的に競合に対し強力なマージン優位を確保。", "status": "positive"},
+                    {"id": 4, "theme": "ASIC市場の Broadcom/Marvell 二強体制の固定化", "impact": "最先端プロセス(3nm)での開発能力を持つ唯一の二社として寡占化が進展。特にAVGOは最高難度のハイパースケーラ案件を独占、シェア70%超を維持。", "status": "positive"},
+                    {"id": 5, "theme": "次世代光技術 CPO (Bailly) の先行商用化", "impact": "業界初の1.6T/3.2T対応CPO『Bailly』を投入。従来型比で消費電力を50%削減し、次世代AIインフラにおける電力密度の限界を打破。", "status": "positive"},
+                    {"id": 6, "theme": "VMware (VCF) サブスクリプション移行の成否", "impact": "VCF全社導入が進み利益率向上に寄与（EBITDAマージン68%）。一方、ライセンス体系変更による一部解約リスクは残るもののLTV向上は確実視。", "status": "neutral"},
+                    {"id": 7, "theme": "CoWoS および HBM 供給キャパシティの制約", "impact": "売上の約半数が先端パッケージング(CoWoS)とHBM供給に依存。バックログは増大しているが、サプライヤー側の生産能力が通期アップサイドの制限要因。", "status": "critical"}
+                ]
+                render_growth_driver_cards(avgo_drivers)
+                st.write("<br>", unsafe_allow_html=True)
+            # ------------------------------------
 
             api_key = get_gemini_api_key()
             if not api_key:

@@ -1,0 +1,272 @@
+{
+  "AMD": [
+    {"id": 1, "theme": "AIアクセラレータ MI325X/350X の供給開始", "impact": "NVIDIA Blackwellに対抗する次世代チップの受注が絶好調。DC部門収益が前年比+50%以上で急成長中。", "status": "positive"},
+    {"id": 2, "theme": "サーバーCPU (EPYC) のシェア拡大継続", "impact": "Intelからのシェア奪取が続いており、クラウド事業者の標準採用が定着。高い利益率を支える屋台骨。", "status": "positive"},
+    {"id": 3, "theme": "AI PC (Ryzen AI) の市場先行投入", "impact": "Copilot+ PC 向けチップで先行。PC市場の買い替えサイクルをAI需要で捉え、クライアント部門が回復基調。", "status": "positive"},
+    {"id": 4, "theme": "チップレット技術による高コスト効率", "impact": "独自のパッケージング技術により、競合に対し高い歩留まりと柔軟な製品構成を実現。マージンの下支え要因。", "status": "positive"},
+    {"id": 5, "theme": "ROCm ソフトウェアエコシステムの成熟", "impact": "◎ CUDAの壁を崩すべく、PyTorchなどのオープンソース連携を強化。ソフトウェアの互換性問題が解消に向かう。", "status": "positive"},
+    {"id": 6, "theme": "推論市場への特化戦略", "impact": "学習だけでなく、より広大な推論市場でのMIシリーズ採用を狙う。HBM容量の優位性を武器に差別化。", "status": "positive"},
+    {"id": 7, "theme": "CUDAネットワーク効果の打破（課題）", "impact": "△ 依然としてNVIDIAの強固な開発者基盤が障壁。ROCmへの完全移行には相応の時間がかかるリスク。", "status": "neutral"}
+  ],
+  "NVDA": [
+    {"id": 1, "theme": "Blackwell (GB200/GB300) の本格量産", "impact": "前世代比で数倍の学習・推論性能を誇る新アーキテクチャへの需要が爆発。2026年の収益成長の最大ドライバ。", "status": "positive"},
+    {"id": 2, "theme": "CUDAエコシステムによる圧倒的「堀」", "impact": "数百万人の開発者がCUDAに依存しており、競合他社はチップ性能だけでなくソフトウェア資産でも劣後する二重の障壁。", "status": "positive"},
+    {"id": 3, "theme": "Rubin ロードマップの加速（毎年更新）", "impact": "製品サイクルを1年に短縮し、競合が追いつく間を与えない超高速展開。技術的優位性を半永久的に固定。", "status": "positive"},
+    {"id": 4, "theme": "NVLink / ネットワーク事業の統合優位", "impact": "GPU単体ではなく、システム全体の接続性で差別化。Spectrum-X Ethernet 等を含めた「AIファクトリー」の提供。", "status": "positive"},
+    {"id": 5, "theme": "ソフトウェア・ライセンス収益の立ち上がり", "impact": "AI Enterprise (AIE) 等の定額収益が開始。ハードウェア売り切りモデルから、高利益率なリカーリング収益への布石。", "status": "positive"},
+    {"id": 6, "theme": "カスタムASICの台頭による潜在的競合", "impact": "△ 大手テック（GOOGL, META等）の内製チップが一部の用途でGPUを代替する可能性。将来的なシェア侵食懸念。", "status": "neutral"},
+    {"id": 7, "theme": "サプライチェーン（CoWoS/HBM）のボトルネック", "impact": "⚠️ 受注は強力だが、TSMCやSKハイニックスの生産能力に売上が規定される状態。供給制約が唯一の成長制限要因。", "status": "critical"}
+  ],
+  "MSFT": [
+    {"id": 1, "theme": "Azure AI 収益の急加速", "impact": "AIサービスがクラウド全体の成長率を数％押し上げるフェーズに突入。エンタープライズAI市場で最大の受益者。", "status": "positive"},
+    {"id": 2, "theme": "Copilot M365 の全社導入拡大", "impact": "Office ユーザーベースへの高単価AIアドオンのクロスセル。世界最大のSaaS収益源としての地位を盤石に。", "status": "positive"},
+    {"id": 3, "theme": "OpenAI との独占的・戦略的提携", "impact": "最新モデル (GPT-5等) のいち早い統合と、同プラットフォームの独占的な提供権。技術トレンドの最前線を維持。", "status": "positive"},
+    {"id": 4, "theme": "自社開発チップ (Maia) の本格採用", "impact": "NVIDIA依存を減らし、AI推論コストを最適化。垂直統合によるクラウドマージンの長期的な改善期待。", "status": "positive"},
+    {"id": 5, "theme": "GitHub Copilot のデベロッパー独占", "impact": "開発者向けAIツールで圧倒的シェア。次世代のアプリケーション開発プラットフォームとしての支配力を強化。", "status": "positive"},
+    {"id": 6, "theme": "既存ソフトウェアのAIトランスフォーメーション", "impact": "ERP/CRM (Dynamics) 等、全製品ラインへのAI実装による競合（Salesforce等）からのシェア奪取。", "status": "positive"},
+    {"id": 7, "theme": "巨額のAIインフラ投資に伴う減価償却負担", "impact": "△ データセンター建設への投資（CapEx）が急増。将来の収益化ペースが投資を下回る場合の利益率圧縮リスク。", "status": "neutral"}
+  ],
+  "GOOGL": [
+    {"id": 1, "theme": "Gemini 2.0 の検索・広告への全面統合", "impact": "AIを活用した検索体験 (SGE) の一般公開。検索精度の向上と、ユーザー離れの懸念を払拭したことが評価。", "status": "positive"},
+    {"id": 2, "theme": "Google Cloud (GCP) の黒字拡大と急成長", "impact": "AIスタートアップの多くがGCPを採用。AWS/Azureを上回る成長率を維持し、第3の収益源として確立。", "status": "positive"},
+    {"id": 3, "theme": "自社開発チップ TPU v6 の効率性優位", "impact": "業界で最も実績のあるAIチップを自社運用。推論コストで他社を圧倒し、無料AIサービスの提供を可能に。", "status": "positive"},
+    {"id": 4, "theme": "YouTube ショートおよびAI生成動画の収益化", "impact": "◎ 若年層の滞在時間が増加。AIによるターゲティング最適化で、Metaに対抗する広告効果を実現。", "status": "positive"},
+    {"id": 5, "theme": "Waymo (自動運転) の商用展開エリア拡大", "impact": "サンフランシスコに加え、複数都市での無人タクシー商用化に成功。AIの社会実装における収益化の先駆者。", "status": "positive"},
+    {"id": 6, "theme": "Android + AI のモバイルエコシステム強化", "impact": "Pixelおよび他社スマホへのAI機能独占提供。Apple Intelligence に対する先制攻撃の成功。", "status": "positive"},
+    {"id": 7, "theme": "独占禁止法訴訟に伴う事業分割リスク", "impact": "⚠️ 米司法省による検索エンジン等の独占に関する訴訟が継続。事業の一部売却や契約制限を課される重大リスク。", "status": "critical"}
+  ],
+  "META": [
+    {"id": 1, "theme": "Llama 4 のオープンソース戦略と業界標準化", "impact": "最新の大規模言語モデルをオープン提供することで、自社エコシステムを拡大。他社（OpenAI/Google）の囲い込みを阻止。", "status": "positive"},
+    {"id": 2, "theme": "AI による広告配信エンジン (Advantage+) の劇的改善", "impact": "ユーザーの関心をAIが正確に予測。広告主の投資対効果 (ROAS) が向上し、広告単価が上昇トレンドに。", "status": "positive"},
+    {"id": 3, "theme": "Ray-Ban Meta スマートグラスの熱狂的普及", "impact": "ディスプレイのない「AIウェアラブル」としての成功。ポストスマホ時代のハードウェアでの主導権を獲得。", "status": "positive"},
+    {"id": 4, "theme": "Reels (ショート動画) のマネタイズ完全移行", "impact": "TikTokからのユーザー奪還に成功。Reels上の広告在庫が拡大し、収益成長のメインドライバへ。", "status": "positive"},
+    {"id": 5, "theme": "自社チップ (MTIA) によるインフラコスト削減", "impact": "推論に特化した自社半導体の第2世代を投入。NVIDIA GPUへの依存度を低減し、利益率を向上。", "status": "positive"},
+    {"id": 6, "theme": "Meta AI の全アプリ（FB/IG/WA）への搭載", "impact": "30億人のユーザーベースにAIアシスタントを提供。日常的な対話データ取得による更なるAI進化の好循環。", "status": "positive"},
+    {"id": 7, "theme": "Reality Labs (メタバース) の巨額損失継続", "impact": "△ 年間数百億ドル規模の投資が継続。将来の空間計算時代への布石だが、現状は営業利益の大きな押し下げ要因。", "status": "neutral"}
+  ],
+  "AMZN": [
+    {"id": 1, "theme": "AWS 成長率の再加速 (AI需要の寄与)", "impact": "企業がクラウド上でのAIモデル開発・運用を本格化。Bedrock等のAI基盤サービスの利用が急増中。", "status": "positive"},
+    {"id": 2, "theme": "自社開発チップ Trainium 3 / Inferentia 2 の展開", "impact": "低コストなAI学習・推論環境を提供することで、競合クラウド（Azure等）に対して価格競争力を維持。", "status": "positive"},
+    {"id": 3, "theme": "小売部門の物流効率化 (AIロボティクスの活用)", "impact": "最新の配送センターでAIが在庫配置と配送ルートを最適化。国内配送コストが低下し、小売の利益率が向上。", "status": "positive"},
+    {"id": 4, "theme": "デジタル広告事業の爆発的成長", "impact": "Google/Metaに次ぐ第3の広告勢力。購入意欲の高い層へのダイレクトアプローチで高い広告単価を実現。", "status": "positive"},
+    {"id": 5, "theme": "Prime ビデオの広告モデル導入成功", "impact": "定額制に加え広告収益を新たな柱として追加。コンテンツ制作費を上回る収益化の目処。", "status": "positive"},
+    {"id": 6, "theme": "エンタープライズ向け生成AIアプリの拡充", "impact": "◎ 企業の社内データと連携したAIエージェントの提供。高収益なソフトウェアサービスのポートフォリオ拡大。", "status": "positive"},
+    {"id": 7, "theme": "世界的な規制当局による独占禁止法調査", "impact": "⚠️ 米FTC等による小売およびクラウドに関する訴訟。事業慣行の修正や損害賠償リスクが継続。", "status": "critical"}
+  ],
+  "AAPL": [
+    {"id": 1, "theme": "Apple Intelligence による iPhone スーパーサイクル", "impact": "プライバシー重視のオンデバイスAIが iPhone 17/18 の強力な買い替え動機に。平均単価 (ASP) も上昇。", "status": "positive"},
+    {"id": 2, "theme": "サービス部門 (App Store/公式定額制) の高利益率", "impact": "インストールベース22億台からの安定収益。ハード販売に依存しない強固な収益構造をさらに強化。", "status": "positive"},
+    {"id": 3, "theme": "Apple Silicon (A/Mシリーズ) の圧倒的な電力効率", "impact": "PC・モバイル共に自社設計チップでの優位を継続。AI処理をバッテリー消費を抑えつつ高速実行可能。", "status": "positive"},
+    {"id": 4, "theme": "Vision Pro Gen 2 以降の市場開拓", "impact": "空間計算の次世代プラットフォーム構築。ハード・ソフトの完成度を高め、将来の収益源として育成中。", "status": "positive"},
+    {"id": 5, "theme": "自社チップによるAIサーバー (PCC) の運用", "impact": "クラウド上でもプライバシーを守りつつAI処理を行うPrivate Cloud Computeを開始。信頼性の差別化。", "status": "positive"},
+    {"id": 6, "theme": "中国市場でのシェア低下と競争激化", "impact": "△ 華為（ファーウェイ）等の地元ブランドによる攻勢。かつての主要な成長エンジンが停滞している懸念。", "status": "neutral"},
+    {"id": 7, "theme": "欧州 DMA 等によるエコシステムの開放圧力", "impact": "⚠️ 外国（EU）の App Store 手数料モデル等に対する規制。サービス部門の利益率に対する下方圧力が継続。", "status": "critical"}
+  ],
+  "ARM": [
+    {"id": 1, "theme": "ARMv9 アーキテクチャへの移行による単価上昇", "impact": "最新のAI機能を含むv9採用銘柄が増加。従来のv8に比べロイヤリティ率が2倍以上になり、収益性が大幅改善。", "status": "positive"},
+    {"id": 2, "theme": "クラウド大手によるカスタムチップ採用の加速", "impact": "AWS Graviton, Google Axion, MSFT Cobalt 等、すべてARMベース。データセンターでのシェアが急騰。", "status": "positive"},
+    {"id": 3, "theme": "Windows on ARM (AI PC) のエコシステム拡大", "impact": "Qualcomm Snapdragon X シリーズを筆頭に、PC市場での採用が拡大。Intelのx86支配を切り崩す。", "status": "positive"},
+    {"id": 4, "theme": "自動車 (SDV) 部門での圧倒的採用シェア", "impact": "電気自動車の演算・制御システムで標準採用。ADAS普及に伴い1台あたりの搭載チップ数が増加。", "status": "positive"},
+    {"id": 5, "theme": "CSS (Compute Subsystems) による高付加価値化", "impact": "チップ設計の一部を完成品に近い形で提供。顧客の開発期間を短縮し、より高いライセンス料を獲得。", "status": "positive"},
+    {"id": 6, "theme": "NVIDIA Blackwell/Rubin との密接な連携", "impact": "Grace-Blackwell (GB200) 等、NVIDIAの主力AIシステムにARM CPUが標準統合され売上が連動。", "status": "positive"},
+    {"id": 7, "theme": "RISC-V 等のオープン規格による長期的脅威", "impact": "△ ライセンス料不要なオープン規格が、中国市場や低価格帯デバイス、一部のインフラで台頭するリスク。", "status": "neutral"}
+  ],
+  "MRVL": [
+    {"id": 1, "theme": "AI向けカスタムASICの大規模受注ランプ", "impact": "大手ハイパースケーラ（AWS/Azure等）向けAIアクセラレータの量産が本格化。2026年の売上2倍超の原動力。", "status": "positive"},
+    {"id": 2, "theme": "800G / 1.6T 光インターコネクト技術の独占", "impact": "AIクラスター内の高速データ転送に欠かせないDSPチップで圧倒的シェア。Broadcomとの二強体制を維持。", "status": "positive"},
+    {"id": 3, "theme": "データセンター向けネットワーク基盤の回復", "impact": "従来の企業向け・通信向けの在庫調整が完了。光通信・スイッチ製品の需要が再び成長軌道へ。", "status": "positive"},
+    {"id": 4, "theme": "3nm プロセス採用チップの早期市場投入", "impact": "最先端プロセスでの設計能力を武器に、顧客の次世代AIハードウェア開発を独占受託。", "status": "positive"},
+    {"id": 5, "theme": "Teralynx スイッチ資産とEthernetファブリック", "impact": "買収した技術をAIバックエンド・ネットワークに最適化。NVLinkに対抗するオープンな接続標準を支援。", "status": "positive"},
+    {"id": 6, "theme": "自動車・産業機器向けシリカ事業の成長", "impact": "車載向けイーサネット接続での高いシェア。SDV化の流れに乗り、AI以外のポートフォリオも堅調。", "status": "positive"},
+    {"id": 7, "theme": "キャリア（5G）インフラ投資の冷え込み", "impact": "△ 世界的な5Gインフラ需要の鈍化が継続。AI以外のレガシー部門が全社成長率の重石となる懸念。", "status": "neutral"}
+  ],
+  "PLTR": [
+    {"id": 1, "theme": "AIP (AI Platform) の爆発的な商用採用", "impact": "「Bootcamp」形式の営業が大成功。企業のAI実装サイクルを数ヶ月から数日に短縮し、米国内収益が3桁成長。", "status": "positive"},
+    {"id": 2, "theme": "国家防衛・諜報分野での独占的な「堀」", "impact": "米国国防総省 (DoD) との深い信頼関係。ウクライナ等の実戦で証明された戦場管理AIの実績が参入障壁。", "status": "positive"},
+    {"id": 3, "theme": "Ontology 技術によるデータの相互運用性", "impact": "バラバラな社内データを統合し「使えるAI」を構築できる唯一無二の技術。競合が模倣できないコア価値。", "status": "positive"},
+    {"id": 4, "theme": "S&P 500 採用による機関投資家の資金流入", "impact": "株価の安定性と流動性が向上。機関投資家のポートフォリオへの標準組み入れが進む好循環。", "status": "positive"},
+    {"id": 5, "theme": "政府案件から民間案件への収益源の多様化成功", "impact": "収益の約半分が民間セクターへ。政府予算に左右されない安定した高成長軌道へシフト。", "status": "positive"},
+    {"id": 6, "theme": "最新の米軍プログラム (TITAN) 等の本格収益化", "impact": "陸軍の次世代地上ステーション等の大型ハード・ソフト統合案件の主契約者として長期収益を確保。", "status": "positive"},
+    {"id": 7, "theme": "割高なバリュエーションへの利益確定売り圧力", "impact": "△ PSR 20倍超等の極めて高いマルチプル。完璧な決算を出し続けなければ株価が調整しやすくボラが大きい。", "status": "neutral"}
+  ],
+  "AVGO": [
+    {"id": 1, "theme": "Custom AI Accelerator (XPU) の独占的拡大", "impact": "Google TPU v6/Meta MTIA等のカスタムASIC出荷が加速し、AI半導体売上は84.4億ドル（+106% YoY）を記録。主要CSPとの共同開発でMRVLに対し規模の経済で圧倒。", "status": "positive"},
+    {"id": 2, "theme": "AIデータセンターのEthernet移行と帯域幅の飛躍", "impact": "1M GPU クラスター向けに 102.4T 帯域の Tomahawk 6 出荷開始。InfiniBandからEthernetへの主導権転換によりネットワーク事業が高成長。", "status": "positive"},
+    {"id": 3, "theme": "接続コスト最適化としての DAC (銅線) 推進", "impact": "スケールアップ領域で光学部品コストを回避するDAC（直接接続銅線）戦略を強化。電力的・コスト的に競合に対し強力なマージン優位を確保。", "status": "positive"},
+    {"id": 4, "theme": "ASIC市場の Broadcom/Marvell 二強体制の固定化", "impact": "最先端プロセス(3nm)での開発能力を持つ唯一の二社として寡占化が進展。特にAVGOは最高難度のハイパースケーラ案件を独占、シェア70%超を維持。", "status": "positive"},
+    {"id": 5, "theme": "次世代光技術 CPO (Bailly) の先行商用化", "impact": "業界初の1.6T/3.2T対応CPO『Bailly』を投入。従来型比で消費電力を50%削減し、次世代AIインフラにおける電力密度の限界を打破。", "status": "positive"},
+    {"id": 6, "theme": "VMware (VCF) サブスクリプション移行の成否", "impact": "VCF全社導入が進み利益率向上に寄与（EBITDAマージン68%）。一方、ライセンス体系変更による一部解約リスクは残るもののLTV向上は確実視。", "status": "neutral"},
+    {"id": 7, "theme": "CoWoS および HBM 供給キャパシティの制約", "impact": "売上の約半数が先端パッケージング(CoWoS)とHBM供給に依存。バックログは増大しているが、サプライヤー側の生産能力が通期アップサイドの制限要因。", "status": "critical"}
+  ],
+  "QCOM": [
+    {"id": 1, "theme": "エッジAI（デバイス上AI）の主導権獲得", "impact": "Snapdragon 8 Gen 5等でのオンデバイスAI実行能力がAndroidプレミアム市場を独占。スマホ買い替えサイクルのトリガーに。", "status": "positive"},
+    {"id": 2, "theme": "Snapdragon X Elite による PC 市場への本格参入", "impact": "Windows on ARM 搭載PCの標準チップとしての地位を確立。Appleの独自チップに対しx86勢を上回る効率性で対抗。", "status": "positive"},
+    {"id": 3, "theme": "自動車部門 (Digital Chassis) の指数関数的成長", "impact": "SDV（ソフトウェア定義車両）化の流れに乗り、車載コックピット・ADAS分野で受注残高が数兆円規模に拡大。", "status": "positive"},
+    {"id": 4, "theme": "強力な知財ポートフォリオ (QTL) による収益性", "impact": "5G/6Gライセンス収入が営業利益の大部分を支える盤石なビジネスモデル。他社の追随を許さない高い参入障壁。", "status": "positive"},
+    {"id": 5, "theme": "AI PC エコシステムにおける MSFT との密接な連携", "impact": "Copilot+ PC のローンチパートナーとして、PC市場におけるARMアーキテクチャの存在感を一気に高めることに成功。", "status": "positive"},
+    {"id": 6, "theme": "ハイエンドモデルへの依存度低下（課題）", "impact": "△ ミドル・ローエンド市場への展開余地。中国メーカーの内製化の動きが長期的なシェアに与える影響を注視。", "status": "neutral"},
+    {"id": 7, "theme": "Apple のモデム内製化に伴う供給終了リスク", "impact": "⚠️ 最大顧客の一つであるAppleが将来的に自社開発モデムに切り替えることによる収益減少リスクが継続。", "status": "critical"}
+  ],
+  "INTC": [
+    {"id": 1, "theme": "Intel 18A プロセスの量産開始と顧客獲得", "impact": "「5年で5ノード」計画の最終目標。Microsoft等の外部顧客獲得により、先端ファウンドリとしての信頼性を回復。", "status": "positive"},
+    {"id": 2, "theme": "AI PC (Lunar Lake/Arrow Lake) の先行展開", "impact": "統合NPUを搭載した新CPUでAI PC市場の過半数シェア確保を狙う。PC市場のリーダーシップ維持へ。", "status": "positive"},
+    {"id": 3, "theme": "Gaudi 3 によるAIトレーニング市場への再挑戦", "impact": "NVIDIA Blackwellに対し、高いTCO（総保有コスト）パフォーマンスを武器に推論・特定用途モデル市場を攻略。", "status": "positive"},
+    {"id": 4, "theme": "米政府補助金 (CHIPS Act) による製造拠点強化", "impact": "地政学リスクを背景に、米国内での先端製造能力を拡大。政府の強力な支援による資金力強化。", "status": "positive"},
+    {"id": 5, "theme": "ファウンドリ事業のセグメント分離と透明性向上", "impact": "◎ 設計と製造の分離により、外部顧客からの信頼を獲得し、資本効率を最適化する体制へ移行。", "status": "positive"},
+    {"id": 6, "theme": "DC部門での AMD EPYC に対するシェア防衛（課題）", "impact": "△ 依然としてサーバー市場でのAMDによる侵食が続く。新製品（Xeon 6）での巻き返し成否を市場が注視。", "status": "neutral"},
+    {"id": 7, "theme": "製造コスト負担と現金の流出リスク", "impact": "⚠️ 先端プロセス開発への巨額投資が続き、フリーキャッシュフローが圧迫。利益率改善まで時間がかかる懸念。", "status": "critical"}
+  ],
+  "ALAB": [
+    {"id": 1, "theme": "PCIe Gen 5/6 リタイマーの爆発的需要", "impact": "AIサーバー内の高速通信を支えるチップで90%以上のシェア。GPUクラスタの拡大に直結する収益構造。", "status": "positive"},
+    {"id": 2, "theme": "CXL コントローラー (Scorpius) の市場形成", "impact": "メモリ共有の次世代標準CXLにおいて先行。今後、ラックスケールのAIインフラにおける標準コンポーネントへ。", "status": "positive"},
+    {"id": 3, "theme": "COSMOS ソフトウェアプラットフォームによる差別化", "impact": "ハードウェアに診断・管理ソフトウェアを統合。競合他社が模倣できないシステムレベルの信頼性を提供。", "status": "positive"},
+    {"id": 4, "theme": "NVIDIA GB200/Blackwell へのデザインウィン", "impact": "最新のAIリファレンスデザインに標準採用。ハイパースケーラーの投資拡大がそのまま売上成長に直結。", "status": "positive"},
+    {"id": 5, "theme": "イーサネット・コネクティビティ領域への拡大", "impact": "◎ 既存のPCIe/CXLに加え、ネットワーク接続用チップも投入開始。TAM（市場規模）の更なる拡大へ。", "status": "positive"},
+    {"id": 6, "theme": "ハイパースケーラーへの高い顧客集中度（リスク）", "impact": "△ 数社の巨大顧客が売上の大部分を占める。特定の顧客の投資抑制や内製化が業績に与える影響が甚大。", "status": "neutral"},
+    {"id": 7, "theme": "MRVL/AVGO 等の巨人との直接競合激化", "impact": "⚠️ 急成長するリタイマー市場に大手が本格参入。技術的アドバンテージを維持できるか厳しい競争環境。", "status": "critical"}
+  ],
+  "CRDO": [
+    {"id": 1, "theme": "AEC (Active Electrical Cables) の独占的地位", "impact": "AIクラスタ内の短距離接続で主流となるAEC市場をリード。従来の銅線に対し、薄さと柔軟性で圧倒的優位。", "status": "positive"},
+    {"id": 2, "theme": "低電力 SERDES 技術によるマージン優位", "impact": "独自の設計により、競合比で半分以下の消費電力を実現。AIデータセンターの電力制限課題への最適解。", "status": "positive"},
+    {"id": 3, "theme": "1.6T イーサネット向け DSP の先行投入", "impact": "光通信モジュール向け次世代チップで市場開拓。ネットワーク帯域の高速化トレンドの直接の受益者。", "status": "positive"},
+    {"id": 4, "theme": "大手クラウド事業者との密接な開発ロードマップ", "impact": "Microsoft 等からの継続的な大型受注。顧客の独自ファブリック設計に深く食い込むコンサル型供給体制。", "status": "positive"},
+    {"id": 5, "theme": "光モジュール統合型チップ (LPO) への注力", "impact": "◎ 省電力化の鍵となるリニア駆動技術で、次世代のネットワーク・トポロジー構築を主導。", "status": "positive"},
+    {"id": 6, "theme": "参入企業の増加による価格競争リスク（課題）", "impact": "△ AEC市場の成功を受け、複数の企業が類似製品を投入。先行者利益から、価格と性能の厳しい競争へシフト。", "status": "neutral"},
+    {"id": 7, "theme": "売上の特定四半期への偏り（ボラティリティ）", "impact": "⚠️ 顧客のプロジェクト進捗に依存するため、売上高の振れ幅が非常に大きい。短期的な業績予想の難しさ。", "status": "critical"}
+  ],
+  "CDNS": [
+    {"id": 1, "theme": "AI駆動の EDA (Cerebrus/Verisium) の普及", "impact": "AIがチップ設計を自動最適化。設計サイクルを数週間短縮し、ハイテクロードマップの実現に不可欠な存在。", "status": "positive"},
+    {"id": 2, "theme": "チップレット (3D-IC) 設計ツールのデファクト化", "impact": "半導体の積層化・多ダイ化に伴う複雑な物理シミュレーションで独走。次世代AI半導体開発の必須ツール。", "status": "positive"},
+    {"id": 3, "theme": "システム・シミュレーション (Palladium/Protium) の需要", "impact": "実チップ完成前にソフトウェア開発を可能にするハードウェア・エミュレータが供給不足になるほど絶好調。", "status": "positive"},
+    {"id": 4, "theme": "ハイパースケーラーの独自チップ開発ブーム", "impact": "Google, Amazon 等が自社チップを設計する際、Cadenceのツールとライブラリを全面採用し収益が拡大。", "status": "positive"},
+    {"id": 5, "theme": "計算流体力学 (CFD) 等、隣接領域への拡大", "impact": "◎ 車載、航空宇宙、データセンターの熱対策シミュレーションへと事業領域を拡げ、TAMを大幅に拡大中。", "status": "positive"},
+    {"id": 6, "theme": "EDA業界の再編に伴う競争構造の変化（注視）", "impact": "△ ライバルの Synopsys が Ansys を買収。解析・物理設計の統合領域での独占的競争がより激化する懸念。", "status": "neutral"},
+    {"id": 7, "theme": "主要顧客のR&D予算削減リスク", "impact": "⚠️ 半導体メーカーが業績悪化により設計投資を絞る場合、ライセンス収益に下方圧力がかかる循環的リスク。", "status": "critical"}
+  ],
+  "SNPS": [
+    {"id": 1, "theme": "Synopsys.ai による設計スタックの全面AI化", "impact": "開発者の生産性を最大10倍に。AIチップの設計複雑化を、AI自身が解決するという強力な成長エンジン。", "status": "positive"},
+    {"id": 2, "theme": "Ansys 買収による「シリコンからシステムへ」の拡大", "impact": "構造、熱、電磁気解析の統合により製品全体の設計をリード。解析ソフト市場での支配的地位の確立。", "status": "positive"},
+    {"id": 3, "theme": "インターフェース IP 市場での圧倒的なシェア", "impact": "DDR5, HBM3, PCIe Gen 6 等の設計資産をライセンス提供。チップ設計における事実上の「税金」を徴収する立場。", "status": "positive"},
+    {"id": 4, "theme": "カスタムシリコン設計サービス (DSO.ai) の伸び", "impact": "AIモデルをチップに最適にマッピングする独自技術。ハイパースケーラーのASIC内製化を裏で支える黒子。", "status": "positive"},
+    {"id": 5, "theme": "セキュリティ・テスト (Software Integrity) の堅調", "impact": "◎ アプリケーション・セキュリティ分野でも強力なポートフォリオ。ソフトウェアの安全性確保の重要性向上。", "status": "positive"},
+    {"id": 6, "theme": "中国向けライセンス輸出規制の影響", "impact": "△ 売上の約15-18%を占める中国市場。米政府による規制強化が中長期的な収益の不確実性を高める。", "status": "neutral"},
+    {"id": 7, "theme": "買収に伴う巨額の負債と統合の不透明感", "impact": "⚠️ Ansysの大型買収によるキャッシュフローの圧迫。反トラスト法による承認遅延や統合失敗のリスク。", "status": "critical"}
+  ],
+  "NFLX": [
+    {"id": 1, "theme": "広告プラン (Ad-Tier) の収益源への定着", "impact": "月間アクティブユーザー数が4,000万人を突破。ARPU（1人当たり収益）の向上に寄与し、成長を再加速。", "status": "positive"},
+    {"id": 2, "theme": "アカウント共有対策 (Paid Sharing) の成功継続", "impact": "これまで「ただ乗り」していた層が有料会員へスムーズに移行。解約率を抑えつつ会員数を純増させる力。", "status": "positive"},
+    {"id": 3, "theme": "ライブ配信イベント (WWE/NFL) への本格参入", "impact": "ボクシング（マイク・タイソン戦）等のライブ配信が記録的視聴。リアルタイム性の価値を取り込み広告単価上昇。", "status": "positive"},
+    {"id": 4, "theme": "グローバルな「非英語」コンテンツの制作能力", "impact": "◎ 現地制作のヒット作が世界的にヒットする構造。制作費を抑えつつ、世界中の加入者を維持・獲得する効率性。", "status": "positive"},
+    {"id": 5, "theme": "動画ゲーム部門のポートフォリオ拡充", "impact": "人気IPのゲーム化により、アプリ滞在時間を増加。将来的な新たな収益の柱への布石が着実に進展。", "status": "positive"},
+    {"id": 6, "theme": "成熟市場における価格改定の受容性評価", "impact": "△ 北米等での値上げに対しユーザーがどう反応するか。会員数純増が頭打ちになるタイミングへの警戒。", "status": "neutral"},
+    {"id": 7, "theme": "コンテンツ制作費の再膨張と競争激化", "impact": "⚠️ ディズニー等のライバルに対抗するための投資。ヒット作が出ない四半期における会員離脱ボラティリティ。", "status": "critical"}
+  ],
+  "CRWD": [
+    {"id": 1, "theme": "Falcon プラットフォームへのシングルエージェント統合", "impact": "1つのプログラムで全てを守れる優位性。導入が容易で、顧客のセキュリティ担当者の負担を劇的に軽減。", "status": "positive"},
+    {"id": 2, "theme": "Charlotte AI によるセキュリティ運用の自動化", "impact": "生成AIが脅威を分析し対策を提案。熟練者不足を補うソリューションとして企業が競って導入。", "status": "positive"},
+    {"id": 3, "theme": "アイデンティティ / クラウド保護部門の急成長", "impact": "従来のPC保護を超え、収益の柱が多角化。ARR（年間経常収益）の成長率30%超を維持する原動力。", "status": "positive"},
+    {"id": 4, "theme": "大規模なデータ基盤 (Threat Graph) の先行者優位", "impact": "世界中の検知データをAIが学習。未知の攻撃にも対抗できる能力が、そのまま競合に対する強力な「堀」となる。", "status": "positive"},
+    {"id": 5, "theme": "Falcon Flex モデルによる中小企業市場への浸透", "impact": "◎ ライセンス形態の柔軟化により、これまで手が届かなかった市場を攻略。顧客層の更なる拡大。", "status": "positive"},
+    {"id": 6, "theme": "Microsoft Defender 等の無料同梱ツールとの競争", "impact": "△ OS標準搭載のツールに対し、追加コストを払う価値を証明し続ける必要性。価格競争への圧力。", "status": "neutral"},
+    {"id": 7, "theme": "システムの可用性リスクとアップデート問題", "impact": "⚠️ 万が一のアップデートミスによる顧客システム停止が起きた際のブランド毀損と損害賠償リスク（過去の教訓）。", "status": "critical"}
+  ],
+  "TSM": [
+    {"id": 1, "theme": "2nm (N2) プロセスの独占的量産開始", "impact": "Apple/NVDA等の主要顧客を2026年内の量産で確保済み。先端ノードでの競合不在（Intel/Samsungの遅れ）による価格支配力。", "status": "positive"},
+    {"id": 2, "theme": "CoWoS 等の先端パッケージング能力の倍増", "impact": "AIチップ供給のボトルネックを解消すべく、先端パッケージング容量を2026年までに2倍以上に拡張。売上の高成長を確約。", "status": "positive"},
+    {"id": 3, "theme": "米・日（熊本）・独での製造拠点分散とリスクヘッジ", "impact": "地政学リスクに対応しつつ、現地の強力な補助金を活用。特に熊本第2・第3工場の2026年以降の収益貢献期待。", "status": "positive"},
+    {"id": 4, "theme": "スマホからAI/HPCへの収益構造のパラダイムシフト", "impact": "売上構成の6割以上がHPC（高性能計算）へ。スマホの周期性に左右されない、AI特需による高成長モードへ完全に突入。", "status": "positive"},
+    {"id": 5, "theme": "Foundry 2.0 概念による業界定義の拡大", "impact": "◎ 従来のウェハ製造に加え、パッケージングや検査も含む広いサービスを提供。1社あたりの売上単価 (Wallet Share) を極大化。", "status": "positive"},
+    {"id": 6, "theme": "電力コスト上昇とサステナビリティ負担", "impact": "△ 台湾内での電気料金値上げと、先端プロセスによる消費電力激増への対応コスト。マージンの微減要因となり得る点を注視。", "status": "neutral"},
+    {"id": 7, "theme": "台湾の地政学的リスク（チャイナリスク）", "impact": "⚠️ 依然として生産の大部分が台湾に集中。有事の際の世界供給網停止リスクは解消されておらず、最大のテールリスク。", "status": "critical"}
+  ],
+  "ASML": [
+    {"id": 1, "theme": "High-NA EUV (EXE:5000) の本格量産導入", "impact": "2nm以降の微細化には不可欠な世界唯一の装置。1台4億ドル以上の高単価製品が、2026年の売上2桁成長を牽引。", "status": "positive"},
+    {"id": 2, "theme": "2026年を「強力な回復と成長の年」と定義", "impact": "2025年の過渡期を経て、顧客の先端ノード投資がピークに達する2026年に向けた装置受注が過去最高水準。", "status": "positive"},
+    {"id": 3, "theme": "チップレット化による露光工程数の増加", "impact": "複数のチップを組み合わせる手法により、全体的なウェハ露光回数が増大。微細化の鈍化を「量」でカバーする構造。", "status": "positive"},
+    {"id": 4, "theme": "サービス・フィールドアップグレード収益の拡大", "impact": "◎ 既設のEUV装置の性能向上アップデートが高収益源化。ハード販売以外の安定した利益の柱として成長。", "status": "positive"},
+    {"id": 5, "theme": "DRAM向けEUV採用の拡大", "impact": "HBMを含む先端メモリ製造でのEUV標準化。ロジック銘柄だけでなくメモリ銘柄の投資再開からも恩恵。", "status": "positive"},
+    {"id": 6, "theme": "対中輸出規制による一部売上機会の損失", "impact": "△ 米政府主導の輸出制限により、中国向け旧型液浸露光装置の売上比率が低下。穴埋めを他地域でできるかが鍵。", "status": "neutral"},
+    {"id": 7, "theme": "フォトマスク・レジスト等の周辺エコシステムの遅れ", "impact": "⚠️ High-NA EUVの能力を100%引き出すための周辺材料やマスクの供給が整わない場合、稼働率が低下するリスク。", "status": "critical"}
+  ],
+  "AMAT": [
+    {"id": 1, "theme": "3D-GAA トランジスタ構造への転換", "impact": "2nm以降で必須となるGAA構造への移行で、成膜・エッチングの難易度が激増。AMATの材料エンジニアリング能力の独壇場。", "status": "positive"},
+    {"id": 2, "theme": "アドバンスド・パッケージング (CoWoS等) 向け装置", "impact": "チップを積み上げるための配線・接続装置で圧倒的な製品群。AIインフラの物理的進化を装置側から主導。", "status": "positive"},
+    {"id": 3, "theme": "BSPDN (背面電源供給) 技術の採用開始", "impact": "配線層を分ける新技術により、専用の成膜工程が新設。Intel/TSMCの次世代ノード採用で新規需要の塊に。", "status": "positive"},
+    {"id": 4, "theme": "サービス契約 (AGS) による収益の安定化", "impact": "◎ 売上の約3割がサブスクリプション型の保守・消耗品契約。景気循環に強い、強固なキャッシュフロー基盤。", "status": "positive"},
+    {"id": 5, "theme": "データセンター電力管理向けのパワー半導体需要", "impact": "省電力化に向けたSiC/GaN製造装置が好調。AIサーバーを支える電力インフラ側からも収益を確保。", "status": "positive"},
+    {"id": 6, "theme": "中国のリレガシーノード投資への高い依存度", "impact": "△ 中国の自給自立に向けた投資が一段落した後の売上変動リスク。先端ノードへのシフトによる純増分との相殺に注視。", "status": "neutral"},
+    {"id": 7, "theme": "反トラスト法的調査と中国当局の嫌がらせリスク", "impact": "⚠️ 米中対立の矢面に立ちやすく、中国での事業認可や訴訟リスクが常につきまとう経営上のボトルネック。", "status": "critical"}
+  ],
+  "LRCX": [
+    {"id": 1, "theme": "Cryo Etch (極低温エッチング) による微細化独占", "impact": "3D NANDの400層超えや次世代ロジックに必須の技術。加工精度の高さで、競合他社（TEL等）を引き離す。", "status": "positive"},
+    {"id": 2, "theme": "HBM (高帯域幅メモリ) の積層化需要", "impact": "メモリを垂直に接続するTSV（シリコン貫通電極）のエッチングで業界標準。AIブームによるHBM増産が直撃の追い風。", "status": "positive"},
+    {"id": 3, "theme": "2026年内のメモリ設備投資 (WFE) の大幅回復", "impact": "長らく停滞していたDRAM/NAND投資がAIサーバー需要で再燃。2026年は過去最大の収益更新を予測。", "status": "positive"},
+    {"id": 4, "theme": "SEMVERSE (デジタルツイン設計) による効率化", "impact": "◎ 物理的な試作を減らし、仮想空間でプロセスを開発。顧客の製品化期間（Time to Market）を劇的に短縮。", "status": "positive"},
+    {"id": 5, "theme": "ベトナム・マレーシア等の供給網再編の完了", "impact": "アジアの製造拠点を強化し、コスト削減と供給の柔軟性を確保。営業利益率の向上に寄与。", "status": "positive"},
+    {"id": 6, "theme": "中国メモリメーカー向け規制の不透明感", "impact": "△ 中国のNAND/DRAMメーカーへの装置制限が強化される可能性。売上の一定割合を占める中国需要の変動リスク。", "status": "neutral"},
+    {"id": 7, "theme": "特定顧客 (Samsung/Micron/SK) への極めて高い集中度", "impact": "⚠️ メモリ大手3社の投資方針変更がそのまま業績に連動。メモリ市況のボラティリティを回避できない宿命。", "status": "critical"}
+  ],
+  "KLAC": [
+    {"id": 1, "theme": "光学検査 (Optical Inspector) 市場の圧倒的独占", "impact": "2nm以降の超微細な欠陥を検出できる唯一のツールを提供。微細化が進むほど「不可欠度」と利益率が上昇。", "status": "positive"},
+    {"id": 2, "theme": "チップレット / CoWoS 向け検査需要の爆発", "impact": "1つのパッケージに多くのチップを載せる際、1箇所の欠陥が致命傷に。AIチップの大型化で検査工程数が倍増。", "status": "positive"},
+    {"id": 3, "theme": "Eビーム (電子線) 技術の第2世代投入", "impact": "光学式では見えない極小欠陥を捉える新装置が好調。Intel/TSMCの次世代ラインへの標準組み入れが期待。", "status": "positive"},
+    {"id": 4, "theme": "サービス・サブスクリプション収益の着実な成長", "impact": "◎ ソフトウェアによる装置最適化ライセンスが急成長。ハード販売後も中長期で利益を吸い上げるモデル。", "status": "positive"},
+    {"id": 5, "theme": "EPC ソフトウェアによる歩留まり管理の統合", "impact": "装置だけでなく、製造データ全体から歩留まりを予測。顧客である半導体メーカーの「生命線」を握る地位。", "status": "positive"},
+    {"id": 6, "theme": "後発メーカーによる低価格検査機の追い上げ", "impact": "△ 比較的難易度の低い工程で、日系や中堅メーカーがシェアを侵食する懸念。先端領域への特化がより鮮明に。", "status": "neutral"},
+    {"id": 7, "theme": "最先端ノードの開発遅延に伴う導入先延ばし", "impact": "⚠️ 顧客（ファウンドリ等）が先端ノードの立ち上げに苦戦する場合、高額な検査装置の納入が遅れるリスク。", "status": "critical"}
+  ],
+  "SMCI": [
+    {"id": 1, "theme": "液体冷却 (DLC) ソリューションの先行的優位", "impact": "1枚1,000Wを超えるBlackwell GPUの冷却には液冷が必須。先行して大規模導入実績を持つことが最大の強み。", "status": "positive"},
+    {"id": 2, "theme": "NVIDIA との「共同設計」に近い密接な提携", "impact": "NVIDIAの公式リファレンスデザインに対し、最も早く最適化されたサーバーを市場投入。圧倒的なTime-to-Market優位。", "status": "positive"},
+    {"id": 3, "theme": "ラックレベルでの垂直統合型提供能力", "impact": "◎ 単体サーバーではなく、DC全体を構築できるラック単位での納品。構築期間を週単位から日単位に短縮。", "status": "positive"},
+    {"id": 4, "theme": "マレーシア・台湾での製造キャパシティ増強", "impact": "月間5,000ラック以上の生産能力を確保。世界的なAIインフラ需要を逃さず取り込める供給体制を構築。", "status": "positive"},
+    {"id": 5, "theme": "Blackwell サーバー受注残の膨大さ", "impact": "過去最大のバックログを保有。2026年までの売上見通しは極めて明るく、成長の継続性は高い。", "status": "positive"},
+    {"id": 6, "theme": "企業ガバナンスとコンプライアンスの再構築（課題）", "impact": "⚠️ 2025年に発生した不適切な会計処理への懸念。信頼回復と上場維持に向けた体制強化が急務。", "status": "neutral"},
+    {"id": 7, "theme": "Dell / HPE 等の既存大手との価格競争激化", "impact": "△ 潤沢な資金を持つ大手が液冷・AIサーバー市場へ本格反攻。マージン（利益率）の低下圧力がかかる懸念。", "status": "neutral"}
+  ],
+  "DELL": [
+    {"id": 1, "theme": "AIサーバー受注残が250億ドルを突破", "impact": "SMCIからの顧客流入も含め、大手エンタープライズのAIインフラ需要を独占。サーバー部門がかつてない成長局面。", "status": "positive"},
+    {"id": 2, "theme": "『Dell AI Factory』によるソフトウェア統合提供", "impact": "ハードだけでなく、NVIDIA/Hugging Faceと連携したAIモデル構築環境を同梱。導入のハードルを下げシェア拡大。", "status": "positive"},
+    {"id": 3, "theme": "エンタープライズ PC の買い替え需要 (AI PC)", "impact": "Windows 10 終了と AI PC への転換期。ノートPC部門の利益率が改善し、サーバー部門との二輪駆動へ。", "status": "positive"},
+    {"id": 4, "theme": "強力な直販・保守サポートネットワークの「堀」", "impact": "◎ 企業の基幹インフラとして高い信頼性が必要なAIサーバーで、SMCI等の新興勢にはない安心感を武器に優位に。", "status": "positive"},
+    {"id": 5, "theme": "Edge AI 向けサーバー (PowerEdge) の拡充", "impact": "データセンター外、現場（エッジ）でのAI処理需要を先取り。スマートファクトリー等の新規市場を攻略。", "status": "positive"},
+    {"id": 6, "theme": "ハイパースケーラー向け受注による利益率低下リスク", "impact": "△ 大手クラウド業者向けは台数は多いがマージンが低い。利益率重視の企業向け受注比率を維持できるかが焦点。", "status": "neutral"},
+    {"id": 7, "theme": "ストレージ部門の成長鈍化懸念", "impact": "△ サーバーに投資が偏る中で、従来のストレージ製品が横ばい。AI特化型ストレージへのシフトの成否を注視。", "status": "neutral"}
+  ],
+  "ORCL": [
+    {"id": 1, "theme": "マルチクラウド戦略 (Azure/Google) の奏功", "impact": "既存顧客のクラウド移行を促進し、OCI売上が+30%超の急成長。", "status": "positive"},
+    {"id": 2, "theme": "AIスタートアップによる OCI 採用の爆発", "impact": "コスト対性能でAWS/Azureを上回り支持拡大。", "status": "positive"},
+    {"id": 3, "theme": "ソブリン・クラウドの独占的契約", "impact": "日本政府等、データ主権を重視する公共部門でのAI基盤契約を獲得。", "status": "positive"},
+    {"id": 4, "theme": "医療向けAI (Cerner統合) の本格収益化", "impact": "専門領域でのAI実装で先行。高付加価値な垂直統合ソフト。", "status": "positive"},
+    {"id": 5, "theme": "データセンター建設用電力の事前確保", "impact": "将来のDC需要を見越したインフラ投資。供給能力の優位性を確立。", "status": "positive"},
+    {"id": 6, "theme": "DBライセンスの減少リスク", "impact": "△ 従来のオンプレミス収益が減少。クラウド成長で相殺中。", "status": "neutral"},
+    {"id": 7, "theme": "クラウド大手3社に対する依然として低い全体シェア", "impact": "△ 規模拡大に向けた投資負担増の懸念。", "status": "neutral"}
+  ],
+  "IBM": [
+    {"id": 1, "theme": "watsonx による企業向け生成AIの独占", "impact": "大企業向けに安全なAI開発環境を提供。AI案件が急増。", "status": "positive"},
+    {"id": 2, "theme": "ハイブリッドクラウド (Red Hat) とのシナジー", "impact": "OpenShiftによるマルチクラウド運用が業界標準へ。", "status": "positive"},
+    {"id": 3, "theme": "量子計算 (Quantum) の商用化リード", "impact": "次世代計算プラットフォームにおける将来の独占的地位への期待。", "status": "positive"},
+    {"id": 4, "theme": "HashiCorp 買収による IaC 市場の支配", "impact": "AI DC運用の標準化ツールとしての確固たる地位。", "status": "positive"},
+    {"id": 5, "theme": "インフラ運用AI (AIOps) の外販", "impact": "自社導入で実績を積んだ自動化ソリューションの販売が好調。", "status": "positive"},
+    {"id": 6, "theme": "レガシー収益の周期性", "impact": "△ メインフレーム端境期のリスク。", "status": "neutral"},
+    {"id": 7, "theme": "コンサルティング市場の全体的な減速懸念", "impact": "⚠️ 景気後退による案件先送りリスク。", "status": "critical"}
+  ],
+  "HPE": [
+    {"id": 1, "theme": "GreenLake エッジ・トゥ・クラウドの成長", "impact": "月間経常収益 (ARR) が増加。ハイブリッドクラウドのサブスクリプション化が成功。", "status": "positive"},
+    {"id": 2, "theme": "AIネイティブ・インフラへの転換", "impact": "大型AIサーバー（Cray等）の受注が爆増。AI特化型インフラの勝者。", "status": "positive"},
+    {"id": 3, "theme": "Juniper Networks 買収によるネットワーキング強化", "impact": "Mist AI 等の技術を統合し、AIデータセンターの接続性で差別化。", "status": "positive"},
+    {"id": 4, "theme": "エンタープライズAIサーバーのシェア拡大", "impact": "既存のサーバー顧客ベースに対し、効率的にAI機材をリプレース。", "status": "positive"},
+    {"id": 5, "theme": "高利益率なソフトウェア・サービスの比率向上", "impact": "ハードウェア単体販売から、高マージンな運用サービスへの移行が加速。", "status": "positive"},
+    {"id": 6, "theme": "競合 (DELL/SMCI) との激しい価格競争", "impact": "△ AIサーバー市場でのシェア争いによる粗利率（マージン）の低下リスク。", "status": "neutral"},
+    {"id": 7, "theme": "従来型コンピュートサーバーの伸び悩み", "impact": "△ 企業の予算がAIに集中し、旧型サーバーの入替が鈍化。", "status": "neutral"}
+  ],
+  "GFS": [
+    {"id": 1, "theme": "車載・産業用半導体の専業ファウンドリ化", "impact": "先端ノードではなく、成熟ノードの高度化で独占的地位。EV/自動運転需要の波を捉える。", "status": "positive"},
+    {"id": 2, "theme": "米国・欧州での地政学的優位性", "impact": "米CHIPS Actの最大の受益者。西側諸国のサプライチェーン確保の要として安定受注。", "status": "positive"},
+    {"id": 3, "theme": "Silicon Photonics (光半導体) での先行", "impact": "AIデータセンターの高速通信に必要な光チップの製造で独占的地位。", "status": "positive"},
+    {"id": 4, "theme": "長期供給契約 (LTA) による収益の透明性", "impact": "大手顧客（Qualcomm/GM等）と数年単位の契約を締結。市況変動への耐性強化。", "status": "positive"},
+    {"id": 5, "theme": "GaN/SiC パワー半導体への展開", "impact": "次世代電力管理チップの製造能力を拡充。AIサーバー/EV向けの高効率需要に対応。", "status": "positive"},
+    {"id": 6, "theme": "中国ファウンドリの低価格攻勢リスク", "impact": "△ 成熟ノード分野での中国勢（SMIC等）との競争。コスト競争力維持が課題。", "status": "neutral"},
+    {"id": 7, "theme": "スマートフォン市場の回復の遅れ", "impact": "△ モバイル向け売上比率が依然として高く、市場停滞の影響を避けられない。", "status": "neutral"}
+  ]
+}
