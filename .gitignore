@@ -1,0 +1,33 @@
+# API keys and sensitive information
+API.txt
+*.key
+*.pem
+.env
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Streamlit config (if you don't want to expose local settings)
+.streamlit/secrets.toml
+
+# Backups
+*.bak
+*.swp
+*~
+
+# Vibe Coding & Test Scripts
+scratch/
+scratch_*.py
+test_*.py
+research_*.py
+inject_*.py
+extend_context.py
+list_models.py
+
+# Data / Output text files
+*.txt
+!requirements.txt
+!README.md
