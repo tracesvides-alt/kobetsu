@@ -274,6 +274,83 @@ st.markdown(
 )
 
 # ─────────────────────────────────────────────
+# セッションステート初期化
+# ─────────────────────────────────────────────
+if "app_mode" not in st.session_state:
+    st.session_state.app_mode = "個別銘柄分析"
+if "active_ticker" not in st.session_state:
+    st.session_state.active_ticker = ""
+if "theme_search_query" not in st.session_state:
+    st.session_state.theme_search_query = ""
+
+# ─────────────────────────────────────────────
+# サイドバー・ナビゲーション
+# ─────────────────────────────────────────────
+with st.sidebar:
+    st.title("Momentum Master")
+    st.radio(
+        "モード選択",
+        ["個別銘柄分析", "テーマ・エクスプローラー"],
+        key="app_mode"
+    )
+    st.divider()
+    st.caption("AI-Powered Institutional Grade Analytics")
+    
+    if st.session_state.app_mode == "テーマ・エクスプローラー":
+        st.info("💡 成長テーマやキーワード（例：AI, 核融合, 減量薬）から銘柄を検索できます。")
+
+# ─────────────────────────────────────────────
+# カスタムCSS (追加)
+# ─────────────────────────────────────────────
+st.markdown(
+    """
+    <style>
+    /* 検索結果カード */
+    .theme-card {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 16px;
+        transition: all 0.2s ease;
+    }
+    .theme-card:hover {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: #00d2ff;
+        transform: translateY(-2px);
+    }
+    .theme-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+    }
+    .theme-ticker {
+        font-size: 1.5rem;
+        font-weight: 800;
+        color: #00d2ff;
+    }
+    .theme-name {
+        font-size: 0.95rem;
+        color: #94a3b8;
+        font-weight: 600;
+    }
+    .theme-match {
+        font-size: 0.9rem;
+        color: #e2e8f0;
+        line-height: 1.6;
+        background: rgba(0, 210, 255, 0.1);
+        padding: 10px 14px;
+        border-radius: 8px;
+        margin-top: 10px;
+        border-left: 3px solid #00d2ff;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# ─────────────────────────────────────────────
 # Plotly 共通テーマ
 # ─────────────────────────────────────────────
 PLOTLY_LAYOUT = dict(
@@ -2183,28 +2260,116 @@ def call_gemini(api_key_ignored: str, system_prompt: str, user_prompt: str) -> s
         return f"Gemini Error: {str(e)}"
 
 # ─────────────────────────────────────────────
-# メイン UI 実行
+# ユーティリティ・コールバック
 # ─────────────────────────────────────────────
-st.title("Momentum Master US")
-st.markdown('<div class="subtitle">AI-Powered Institutional Grade Stock Analysis Dashboard</div>', unsafe_allow_html=True)
+def handle_detail_view(ticker):
+    """テーマ検索結果から個別分析へ遷移するためのコールバック。"""
+    st.session_state.app_mode = "個別銘柄分析"
+    st.session_state.active_ticker = ticker
 
-ticker = st.text_input("📈 分析したいティッカーシンボルを入力 (例: NVDA, TSMC, AAPL)", value="", help="米国株のティッカー（大文字）を入力してください。").upper()
 
-if ticker:
-    with st.spinner(f"{ticker} のデータを取得中..."):
-        data = fetch_stock_data(ticker)
+def render_theme_explorer():
+    """テーマ・キーワード検索画面を表示。"""
+    st.title("🔭 Theme Explorer")
+    st.markdown('<div class="subtitle">データベースを横断検索し、共通の成長要因を持つ銘柄を炙り出します</div>', unsafe_allow_html=True)
+    
+    # DBの読み込み
+    drivers_db = {}
+    db_path = os.path.join(os.path.dirname(__file__), "growth_drivers_db.json")
+    if os.path.exists(db_path):
+        try:
+            with open(db_path, "r", encoding="utf-8") as f:
+                drivers_db = json.load(f)
+        except Exception:
+            pass
+
+    if not drivers_db:
+        st.error("データベース (growth_drivers_db.json) が読み込めませんでした。")
+        return
+
+    # クイック検索タグ
+    st.markdown("##### 🏷️ 人気のキーワード")
+    tags = ["AI", "半導体", "データセンター", "クラウド", "自動運転", "セキュリティ", "原子力", "iPhone", "EV", "広告", "中国"]
+    tag_cols = st.columns(len(tags))
+    for i, tag in enumerate(tags):
+        if tag_cols[i].button(tag, use_container_width=True):
+            st.session_state.theme_search_query = tag
+            st.rerun()
+
+    # 検索入力
+    search_query = st.text_input("🔍 キーワード検索 (部分一致)", key="theme_search_query", placeholder="例: データセンター, 核融合, サイバーセキュリティ, 量子...")
+
+    if search_query:
+        query = search_query.lower()
+        results = []
+        for t, drivers in drivers_db.items():
+            for d in drivers:
+                if query in d.get("theme", "").lower() or query in d.get("impact", "").lower():
+                    results.append({
+                        "ticker": t,
+                        "theme": d.get("theme"),
+                        "impact": d.get("impact"),
+                        "status": d.get("status", "neutral")
+                    })
         
-    if not data:
-        st.error(f"❌ '{ticker}' のデータが見つかりませんでした。")
-    else:
-        # ヘッダー情報
-        st.markdown(f'<div class="company-name">{data["name"]} ({ticker})</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
-        
-        # ─── タブ切り替え ───
-        tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_risk, tab_ai, tab_cio = st.tabs(
-            ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
-        )
+        if results:
+            st.success(f"**{len(results)}** 件の成長ドライバが一致しました。")
+            
+            # 結果表示
+            for i, res in enumerate(results):
+                with st.container():
+                    col_card, col_btn = st.columns([5, 1])
+                    with col_card:
+                        st.markdown(f"""
+                        <div class="theme-card">
+                            <div class="theme-card-header">
+                                <span class="theme-ticker">{res['ticker']}</span>
+                                <span class="theme-name">{res['theme']}</span>
+                            </div>
+                            <div class="theme-match">
+                                <b>【分析結果】</b>: {res['impact']}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    with col_btn:
+                        st.write("<br>" * 2, unsafe_allow_html=True)
+                        st.button(
+                            "詳細分析 ➔", 
+                            key=f"go_{res['ticker']}_{i}", 
+                            on_click=handle_detail_view, 
+                            args=(res['ticker'],)
+                        )
+        else:
+            st.warning(f"🔍 『{search_query}』に一致するテーマは見つかりませんでした。別のキーワード（日本語・英語）をお試しください。")
+
+
+def render_stock_analyzer():
+    """個別銘柄の詳細分析画面を表示。"""
+    st.title("Momentum Master US")
+    st.markdown('<div class="subtitle">AI-Powered Institutional Grade Stock Analysis Dashboard</div>', unsafe_allow_html=True)
+
+    # 入力ソース
+    ticker = st.text_input("📈 分析したいティッカーを入力", key="active_ticker", help="例: NVDA, AVGO, TSLA").upper()
+    
+    if ticker:
+        with st.spinner(f"{ticker} のデータを取得中..."):
+            data = fetch_stock_data(ticker)
+            
+        if not data:
+            st.error(f"❌ '{ticker}' のデータが見つかりませんでした。")
+        else:
+            # yfinanceに表示用セクター名等を追加
+            data["sector_display"] = SECTOR_JA_MAP.get(data.get("sector"), data.get("sector"))
+            data["industry_display"] = INDUSTRY_JA_MAP.get(data.get("industry"), data.get("industry"))
+
+            # ヘッダー情報
+            st.markdown(f'<div class="company-name">{data["name"]} ({ticker})</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
+            
+            # ─── タブ切り替え ───
+            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_risk, tab_ai, tab_cio = st.tabs(
+                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
+            )
 
         # 1. 基本情報
         with tab_basic:
@@ -2926,5 +3091,13 @@ if ticker:
 
             st.caption("⚠️ 本ダッシュボードは情報提供を目的としたものであり、特定の投資行動を推奨するものではありません。投資判断はご自身の責任でお願いいたします。")
 
+    else:
+        st.info("👆 ティッカーシンボルを入力して分析を開始してください。")
+
+# ─────────────────────────────────────────────
+# 最終的なルーティング
+# ─────────────────────────────────────────────
+if st.session_state.app_mode == "テーマ・エクスプローラー":
+    render_theme_explorer()
 else:
-    st.info("👆 ティッカーシンボルを入力して分析を開始してください。")
+    render_stock_analyzer()
