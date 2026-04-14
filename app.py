@@ -808,88 +808,92 @@ def get_translated_summary(summary_text: str) -> str:
 
 @st.cache_data(ttl=300)
 def fetch_stock_data(ticker: str) -> dict | None:
-    """yfinance を使って株価指標を取得する。"""
+    """yfinance を使って株価指標を取得する。詳細データが取得できない場合は基本データで補完する。"""
     try:
         stock = yf.Ticker(ticker)
+        # 1. メインの info 取得試行
         info = stock.info
-
-        # 有効なデータかチェック（空辞書 or 名前なし → 無効）
-        if not info or "shortName" not in info:
-            return None
-
-        res = {
-            "name": info.get("shortName") or info.get("longName") or ticker,
-            "sector": info.get("sector") or info.get("sectorKey"),
-            "industry": info.get("industry") or info.get("industryKey"),
-            "exchange": info.get("exchange"),
-            "long_summary": info.get("longBusinessSummary", ""),
-            "website": info.get("website", ""),
-            "employees": info.get("fullTimeEmployees"),
-            "city": info.get("city", ""),
-            "state": info.get("state", ""),
-            "country": info.get("country", ""),
-            "officers": info.get("companyOfficers", []),
-            "price": info.get("currentPrice") or info.get("regularMarketPrice"),
-            "currency": info.get("currency", "USD"),
-            "market_cap": info.get("marketCap"),
-            "pe_ratio": info.get("trailingPE"),
-            "pb_ratio": info.get("priceToBook"),
-            "dividend_yield": info.get("dividendYield"),
-            "prev_close": info.get("previousClose"),
-            "shares_outstanding": info.get("sharesOutstanding"),
-            "total_cash": info.get("total_cash", 0),
-            "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
-            "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
-            # 理論株価・分析用
-            "eps_trailing": info.get("trailingEps"),
-            "eps_forward": info.get("forwardEps"),
-            "eps_growth": info.get("earningsGrowth"),
-            "revenue_growth": info.get("revenueGrowth"),
-            "beta": info.get("beta"),
-            "profit_margins": info.get("profitMargins"),
-            "debt_to_equity": info.get("debtToEquity"),
-            "operating_margins": info.get("operatingMargins"),
-            "roe": info.get("returnOnEquity"),
-            # マーケット・データ用に追加
-            "avg_vol_3m": info.get("averageVolume"),
-            "avg_vol_10d": info.get("averageVolume10days"),
-            "short_ratio": info.get("shortPercentOfFloat"),
-            "ex_dividend_date": info.get("exDividendDate"),
-        }
-
-        # セクター等の欠損補完 (fast_info / basic_info へのフォールバック)
+        
+        # 基本的な器を作成
+        res = {}
+        
+        # infoが取得できた場合
+        if info and isinstance(info, dict) and "shortName" in info:
+            res = {
+                "name": info.get("shortName") or info.get("longName") or ticker,
+                "sector": info.get("sector") or info.get("sectorKey"),
+                "industry": info.get("industry") or info.get("industryKey"),
+                "exchange": info.get("exchange"),
+                "long_summary": info.get("longBusinessSummary", ""),
+                "website": info.get("website", ""),
+                "employees": info.get("fullTimeEmployees"),
+                "city": info.get("city", ""),
+                "state": info.get("state", ""),
+                "country": info.get("country", ""),
+                "officers": info.get("companyOfficers", []),
+                "price": info.get("currentPrice") or info.get("regularMarketPrice"),
+                "currency": info.get("currency", "USD"),
+                "market_cap": info.get("marketCap"),
+                "pe_ratio": info.get("trailingPE"),
+                "pb_ratio": info.get("priceToBook"),
+                "dividend_yield": info.get("dividendYield"),
+                "prev_close": info.get("previousClose"),
+                "shares_outstanding": info.get("sharesOutstanding"),
+                "total_cash": info.get("total_cash", 0),
+                "fifty_two_week_high": info.get("fiftyTwoWeekHigh"),
+                "fifty_two_week_low": info.get("fiftyTwoWeekLow"),
+                "eps_trailing": info.get("trailingEps"),
+                "eps_forward": info.get("forwardEps"),
+                "eps_growth": info.get("earningsGrowth"),
+                "revenue_growth": info.get("revenueGrowth"),
+                "beta": info.get("beta"),
+                "profit_margins": info.get("profitMargins"),
+                "debt_to_equity": info.get("debtToEquity"),
+                "operating_margins": info.get("operatingMargins"),
+                "roe": info.get("returnOnEquity"),
+                "avg_vol_3m": info.get("averageVolume"),
+                "avg_vol_10d": info.get("averageVolume10days"),
+                "short_ratio": info.get("shortPercentOfFloat"),
+                "ex_dividend_date": info.get("exDividendDate"),
+            }
+        
+        # 2. infoが不完全な場合の fast_info 補完
         try:
-            if not res.get("sector") or res.get("sector") == "—":
-                if hasattr(stock, "fast_info") and "sector" in stock.fast_info:
-                    res["sector"] = stock.fast_info["sector"]
-            if not res.get("industry") or res.get("industry") == "—":
-                if hasattr(stock, "fast_info") and "industry" in stock.fast_info:
-                    res["industry"] = stock.fast_info["industry"]
-            if not res.get("exchange") or res.get("exchange") == "—":
-                if hasattr(stock, "fast_info") and "exchange" in stock.fast_info:
-                    res["exchange"] = stock.fast_info["exchange"]
-        except Exception:
+            fast = stock.fast_info
+            if fast:
+                if not res.get("name"): res["name"] = ticker
+                if not res.get("price"): res["price"] = fast.get("lastPrice")
+                if not res.get("market_cap"): res["market_cap"] = fast.get("marketCap")
+                if not res.get("currency"): res["currency"] = fast.get("currency", "USD")
+                if not res.get("exchange"): res["exchange"] = fast.get("exchange")
+                if not res.get("prev_close"): res["prev_close"] = fast.get("previousClose")
+                if not res.get("fifty_two_week_high"): res["fifty_two_week_high"] = fast.get("yearHigh")
+                if not res.get("fifty_two_week_low"): res["fifty_two_week_low"] = fast.get("yearLow")
+        except:
             pass
 
-        # 最終的なデフォルト値の適用
+        # 有効なデータか最終チェック（銘柄名も価格も取れない場合はNG）
+        if not res.get("name") or not res.get("price"):
+            return None
+
+        # 3. セクター等の欠損補完
         for k in ["sector", "industry", "exchange"]:
-            if not res.get(k):
+            if not res.get(k) or res.get(k) == "—":
                 res[k] = "—"
 
         # 決算日の取得 (calendar属性から)
         try:
-            cal = ticker.calendar
+            cal = stock.calendar # ticker.calendar から修正
             if isinstance(cal, dict) and "Earnings Date" in cal:
                 res["earnings_date"] = cal["Earnings Date"][0]
             elif hasattr(cal, "iloc") and not cal.empty:
-                # 稀にDataFrameで返るケースへの対応
                 res["earnings_date"] = cal.iloc[0, 0]
             else:
                 res["earnings_date"] = None
         except:
             res["earnings_date"] = None
 
-        # 日本語化処理（固定マップのみ、AIは使用しない）
+        # 日本語化処理
         res["sector_display"] = SECTOR_JA_MAP.get(res["sector"], res["sector"])
         res["industry_display"] = INDUSTRY_JA_MAP.get(res["industry"], res["industry"])
 
