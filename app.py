@@ -2496,8 +2496,15 @@ def render_stock_analyzer():
                 with st.expander("🛠️ エラーの詳細を確認する"):
                     st.code(error_detail, language="text")
                     st.info("💡 ヒント: ティッカーが正しいか、ネットワーク接続、または yfinance の一時的な制限を確認してください。")
-        else:
-            # yfinanceに表示用セクター名等を追加
+            return # データがない場合はここで終了
+        
+        # データの取得には成功したが、エラー詳細がある場合（一部欠損など）
+        if error_detail:
+            with st.expander("⚠️ データの一部取得に失敗した可能性があります (詳細を確認)"):
+                st.warning("一部のデータの取得中にエラーが発生しました。事業概要や財務指標が不足している場合があります。")
+                st.code(error_detail, language="text")
+
+        # yfinanceに表示用セクター名等を追加
             data["sector_display"] = SECTOR_JA_MAP.get(data.get("sector"), data.get("sector"))
             data["industry_display"] = INDUSTRY_JA_MAP.get(data.get("industry"), data.get("industry"))
 
