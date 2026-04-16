@@ -807,12 +807,17 @@ def get_translated_summary(summary_text: str) -> str:
 # ─────────────────────────────────────────────
 
 @st.cache_data(ttl=300)
-def fetch_stock_data(ticker: str) -> dict | None:
+def fetch_stock_data(ticker: str) -> tuple[dict | None, str | None]:
     """yfinance を使って株価指標を取得する。詳細データが取得できない場合は基本データで補完する。"""
+    error_msg = None
     try:
         stock = yf.Ticker(ticker)
         # 1. メインの info 取得試行
-        info = stock.info
+        try:
+            info = stock.info
+        except Exception as e:
+            info = None
+            error_msg = f"yfinance.info エラー: {str(e)}"
         
         # 基本的な器を作成
         res = {}
@@ -869,12 +874,17 @@ def fetch_stock_data(ticker: str) -> dict | None:
                 if not res.get("prev_close"): res["prev_close"] = fast.get("previousClose")
                 if not res.get("fifty_two_week_high"): res["fifty_two_week_high"] = fast.get("yearHigh")
                 if not res.get("fifty_two_week_low"): res["fifty_two_week_low"] = fast.get("yearLow")
-        except:
-            pass
+        except Exception as e:
+            if not error_msg:
+                error_msg = f"yfinance.fast_info エラー: {str(e)}"
+            else:
+                error_msg += f" / fast_infoエラー: {str(e)}"
 
         # 有効なデータか最終チェック（銘柄名も価格も取れない場合はNG）
         if not res.get("name") or not res.get("price"):
-            return None
+            if not error_msg:
+                error_msg = "必要な基本データ（銘柄名または株価）が yfinance から取得できませんでした。"
+            return None, error_msg
 
         # 3. セクター等の欠損補完
         for k in ["sector", "industry", "exchange"]:
@@ -897,21 +907,27 @@ def fetch_stock_data(ticker: str) -> dict | None:
         res["sector_display"] = SECTOR_JA_MAP.get(res["sector"], res["sector"])
         res["industry_display"] = INDUSTRY_JA_MAP.get(res["industry"], res["industry"])
 
-        return res
+        return res, error_msg
     except Exception as e:
-        print(f"Fetch Error for {ticker}: {e}")
-        return None
+        import traceback
+        full_err = traceback.format_exc()
+        print(f"Fetch Error for {ticker}: {full_err}")
+        return None, f"致命的な取得エラー: {str(e)}\n\n{full_err}"
+
 
 
 @st.cache_data(ttl=300)
-def fetch_financials(ticker: str) -> dict | None:
+def fetch_financials(ticker: str) -> tuple[dict | None, str | None]:
     """yfinance を使って過去の財務データ（損益計算書 & キャッシュフロー）を取得する。"""
     try:
         stock = yf.Ticker(ticker)
 
         # 年次損益計算書
-        income_stmt = stock.financials  # columns = 日付, rows = 項目
-        cashflow = stock.cashflow
+        try:
+            income_stmt = stock.financials  # columns = 日付, rows = 項目
+            cashflow = stock.cashflow
+        except Exception as e:
+            return None, f"財務データアクセスエラー: {str(e)}"
 
         if income_stmt is None or income_stmt.empty:
             return None
@@ -957,13 +973,13 @@ def fetch_financials(ticker: str) -> dict | None:
             result["operating_cf"] = None
             result["cf_dates"] = []
 
-        return result
-    except Exception:
-        return None
+        return result, None
+    except Exception as e:
+        return None, f"財務データ取得エラー: {str(e)}"
 
 
 @st.cache_data(ttl=300)
-def fetch_quarterly_financials(ticker: str) -> dict | None:
+def fetch_quarterly_financials(ticker: str) -> tuple[dict | None, str | None]:
     """yfinance を使って四半期ごとの財務データ（損益計算書 & キャッシュフロー）を取得する。"""
     try:
         stock = yf.Ticker(ticker)
@@ -1021,10 +1037,10 @@ def fetch_quarterly_financials(ticker: str) -> dict | None:
             result["operating_cf"] = None
             result["cf_dates"] = []
 
-        return result
+        return result, None
     except Exception as e:
         print(f"Quarterly Financials Error: {e}")
-        return None
+        return None, f"四半期財務データ取得エラー: {str(e)}"
 
 
 @st.cache_data(ttl=300)
@@ -2472,10 +2488,14 @@ def render_stock_analyzer():
     
     if ticker:
         with st.spinner(f"{ticker} のデータを取得中..."):
-            data = fetch_stock_data(ticker)
+            data, error_detail = fetch_stock_data(ticker)
             
         if not data:
             st.error(f"❌ '{ticker}' のデータが見つかりませんでした。")
+            if error_detail:
+                with st.expander("🛠️ エラーの詳細を確認する"):
+                    st.code(error_detail, language="text")
+                    st.info("💡 ヒント: ティッカーが正しいか、ネットワーク接続、または yfinance の一時的な制限を確認してください。")
         else:
             # yfinanceに表示用セクター名等を追加
             data["sector_display"] = SECTOR_JA_MAP.get(data.get("sector"), data.get("sector"))
@@ -2584,9 +2604,9 @@ def render_stock_analyzer():
                 fin_period = st.radio("📅 表示期間", ["年次", "四半期"], horizontal=True, key="fin_period")
                 
                 if fin_period == "年次":
-                    fin = fetch_financials(ticker)
+                    fin, fin_err = fetch_financials(ticker)
                 else:
-                    fin = fetch_quarterly_financials(ticker)
+                    fin, fin_err = fetch_quarterly_financials(ticker)
                 
                 if fin:
                     col_c1, col_c2 = st.columns(2)
@@ -2596,6 +2616,9 @@ def render_stock_analyzer():
                         st.plotly_chart(create_cashflow_chart(fin.get("cf_dates", fin["dates"]), fin.get("operating_cf", [])), use_container_width=True)
                 else:
                     st.info("財務データが取得できませんでした。")
+                    if fin_err:
+                        with st.expander("詳細なエラー"):
+                            st.write(fin_err)
     
                 st.divider()
                 # 利益ベースの理論株価 (Earnings Valuation with Discounting)
@@ -2971,7 +2994,7 @@ def render_stock_analyzer():
                     api_key = st.text_input("Gemini API Key を入力してください", type="password")
                 
                 if api_key:
-                    prompt = build_analysis_prompt(ticker, data, fin=fetch_financials(ticker), adv_fin=fetch_advanced_financials(ticker), analyst=fetch_analyst_data(ticker))
+                    prompt = build_analysis_prompt(ticker, data, fin=fetch_financials(ticker)[0], adv_fin=fetch_advanced_financials(ticker), analyst=fetch_analyst_data(ticker))
                     if st.button("AI分析を実行", type="primary"):
                         with st.spinner("AIがデータを解析中..."):
                             report = call_gemini(api_key, SYSTEM_PROMPT, prompt)
@@ -2987,7 +3010,7 @@ def render_stock_analyzer():
     
                 # ─── 必要データの取得 ───
                 with st.spinner("統合診断データを生成中…"):
-                    cio_fin = fetch_financials(ticker)
+                    cio_fin, _ = fetch_financials(ticker)
                     cio_adv = fetch_advanced_financials(ticker)
                     cio_sepa = evaluate_sepa(ticker)
                     cio_canslim = evaluate_canslim(ticker)
