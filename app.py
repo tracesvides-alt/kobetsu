@@ -1676,6 +1676,241 @@ def evaluate_canslim(ticker: str) -> dict:
         pass
     return results
 
+@st.cache_data(ttl=3600)
+def evaluate_weinstein_stage(ticker: str) -> dict:
+    """スタン・ワインスタインのステージ分析（1〜4段階 + サブステージ）を判定する"""
+    res = {
+        "stage": "Unknown",
+        "sub_stage": "",
+        "stage_label_ja": "判定不能",
+        "sub_stage_label_ja": "",
+        "full_label": "N/A",
+        "full_label_ja": "判定不能",
+        "entry_quality": "avoid",
+        "entry_comment": "データ不足により判定できません。",
+        "description": "",
+        "reason": [],
+        "latest_close": 0,
+        "ma30": 0,
+        "price_vs_ma_pct": 0,
+        "ma_slope_pct": 0,
+        "trend_status": "neutral",
+        "volume_status": "normal",
+        "breakout_status": "none",
+        "rsi": 50,
+        "distance_from_52w_high_pct": 0,
+        "weeks_in_current_trend": 0
+    }
+    
+    try:
+        stock = yf.Ticker(ticker)
+        # 30週MA算出のため、約3年分のデータを取得
+        hist = stock.history(period="3y")
+        if hist.empty or len(hist) < 200:
+            return res
+
+        # 日足 → 週足変換 (金利週末)
+        logic = {
+            'Open': 'first',
+            'High': 'max',
+            'Low': 'min',
+            'Close': 'last',
+            'Volume': 'sum'
+        }
+        df_w = hist.resample('W-FRI').apply(logic).dropna()
+        if len(df_w) < 40:
+            return res
+
+        # 指標計算
+        df_w['MA30'] = df_w['Close'].rolling(30).mean()
+        # 傾き（直近4週の変化率）
+        df_w['MA30_Slope'] = (df_w['MA30'] - df_w['MA30'].shift(4)) / df_w['MA30'].shift(4)
+        # 週足RSI
+        df_w['RSI'] = compute_rsi(df_w['Close'], 14)
+        # 52週出来高平均
+        df_w['Vol_Avg'] = df_w['Volume'].rolling(52).mean()
+        # 52週高値
+        df_w['H52'] = df_w['High'].rolling(52).max()
+        
+        # 直近データの抽出
+        latest = df_w.iloc[-1]
+        p = latest['Close']
+        ma30 = latest['MA30']
+        slope = latest['MA30_Slope']
+        rsi = latest['RSI']
+        vol_avg = latest['Vol_Avg']
+        h52 = latest['H52']
+        
+        if pd.isna(ma30) or pd.isna(slope):
+            return res
+
+        res['latest_close'] = p
+        res['ma30'] = ma30
+        res['price_vs_ma_pct'] = ((p - ma30) / ma30) * 100
+        res['ma_slope_pct'] = slope * 100
+        res['rsi'] = rsi
+        res['distance_from_52w_high_pct'] = ((p - h52) / h52) * 100
+
+        # --- 判定ロジック ---
+        reasons = []
+        stage = ""
+        sub = ""
+        
+        # 基本トレンドと乖離
+        dist_pct = res['price_vs_ma_pct']
+        vol_ratio = latest['Volume'] / vol_avg if vol_avg > 0 else 1.0
+        
+        if slope > 0.005: # 上向き
+            if p > ma30:
+                stage = "Stage 2"
+                res['stage_label_ja'] = "第2段階（上昇局面）"
+                if dist_pct < 10:
+                    sub = "early"
+                    res['sub_stage_label_ja'] = "初期"
+                    res['entry_quality'] = "ideal"
+                    res['entry_comment'] = "ワインスタイン流の本命エントリー帯。ベースを抜けて上昇が始まったばかりの理想的な局面です。"
+                    res['description'] = "ベース上抜け後の上昇初動局面です。"
+                    reasons.append("30週線が明確に上向き")
+                    reasons.append(f"株価が30週線の上方に位置（乖離 {dist_pct:.1f}%）")
+                    if vol_ratio > 1.2: reasons.append("出来高が平均を上回り、買い圧力が強い")
+                elif dist_pct > 25 or rsi > 70:
+                    sub = "late"
+                    res['sub_stage_label_ja'] = "後期"
+                    res['entry_quality'] = "watch"
+                    res['entry_comment'] = "上昇後半で新規エントリーは慎重に。すでにかなり伸びており、押し目待ちが賢明です。"
+                    res['description'] = "トレンドは強いが、短期的には過熱感が見られます。"
+                    reasons.append("30週線は上向きを維持")
+                    reasons.append(f"株価が30週線から大きく乖離（{dist_pct:.1f}%）")
+                    if rsi > 70: reasons.append("週足RSIが買われすぎ水準")
+                else:
+                    sub = "mid"
+                    res['sub_stage_label_ja'] = "中期"
+                    res['entry_quality'] = "good"
+                    res['entry_comment'] = "健全な上昇トレンドを継続中。押し目買いの候補として有効な局面です。"
+                    res['description'] = "安定した上昇トレンドが続いています。"
+                    reasons.append("30週線が安定して右肩上がり")
+                    reasons.append("株価が30週線の上で健全に推移")
+            else:
+                stage = "Stage 3"
+                res['stage_label_ja'] = "第3段階（天井形成）"
+                sub = "early"
+                res['sub_stage_label_ja'] = "初期"
+                res['entry_quality'] = "avoid"
+                res['entry_comment'] = "上昇の勢いが鈍化。30週線を割り込んでおり、トレンド転換の警戒が必要です。"
+                res['description'] = "上昇トレンドに陰りが見え始め、勢いが弱まっています。"
+                reasons.append("30週線の上向きが弱まっている")
+                reasons.append("価格が30週線を下回ってきた")
+
+        elif slope < -0.005: # 下向き
+            if p < ma30:
+                stage = "Stage 4"
+                res['stage_label_ja'] = "第4段階（下降局面）"
+                if dist_pct < -20 or rsi < 30:
+                    sub = "late"
+                    res['sub_stage_label_ja'] = "後期"
+                    res['entry_quality'] = "watch"
+                    res['entry_comment'] = "過度な下落による売られすぎ水準。反転監視を開始できるが、買いはまだ早い局面です。"
+                    res['description'] = "長期的な下降トレンドの最終局面、セリングクライマックスに近い可能性があります。"
+                    reasons.append("30週線が急角度で下向き")
+                    reasons.append(f"株価が30週線から下方へ大きく乖離（{dist_pct:.1f}%）")
+                    if rsi < 30: reasons.append("週足RSIが売られすぎ水準")
+                elif dist_pct > -5:
+                    sub = "early"
+                    res['sub_stage_label_ja'] = "初期"
+                    res['entry_quality'] = "avoid"
+                    res['entry_comment'] = "下降トレンドの初期段階。戻り売りが出やすく、基本は回避すべき局面です。"
+                    res['description'] = "価格が30週線を割り込み、本格的な下落が始まっています。"
+                    reasons.append("30週線が下向きに転換")
+                    reasons.append("価格が長期MAの下で推移開始")
+                else:
+                    sub = "mid"
+                    res['sub_stage_label_ja'] = "中期"
+                    res['entry_quality'] = "avoid"
+                    res['entry_comment'] = "安定した下降トレンド。保有は危険であり、静観を推奨します。"
+                    res['description'] = "下落の勢いが強く、底打ちの兆候はまだ見られません。"
+                    reasons.append("30週線が安定して下向き")
+                    reasons.append("安値更新が続いている")
+            else:
+                stage = "Stage 1"
+                res['stage_label_ja'] = "第1段階（底固め）"
+                sub = "early"
+                res['sub_stage_label_ja'] = "初期"
+                res['entry_quality'] = "avoid"
+                res['entry_comment'] = "底打ちの可能性はあるが、まだ信頼性は低い。30週線の反転を待つべき局面です。"
+                res['description'] = "長期下落の後に価格が30週線上に戻ってきましたが、MAはまだ下向きです。"
+                reasons.append("30週線は依然として下向き")
+                reasons.append("価格が自律反発でMAを一時的に上抜けた状態")
+
+        else: # 横ばい
+            if p > ma30:
+                recent_max = df_w['Close'].rolling(10).max().iloc[-2]
+                if p > recent_max:
+                    stage = "Stage 2"
+                    res['stage_label_ja'] = "第2段階（上昇局面）"
+                    sub = "early"
+                    res['sub_stage_label_ja'] = "初期"
+                    res['entry_quality'] = "ideal"
+                    res['entry_comment'] = "ブレイクアウト確認！Stage 2入りの初動であり、本命のエントリーポイントです。"
+                    reasons.append("30週線がフラットから上向きへ")
+                    reasons.append("直近のレンジを高値で上抜けた")
+                else:
+                    stage = "Stage 1"
+                    res['stage_label_ja'] = "第1段階（底固め）"
+                    sub = "late"
+                    res['sub_stage_label_ja'] = "後期"
+                    res['entry_quality'] = "good"
+                    res['entry_comment'] = "Stage 2入り前の有力候補。ブレイクアウト直前の仕込み時、または監視強化の局面です。"
+                    res['description'] = "ベース形成が進み、ボラティリティが収縮しています。"
+                    reasons.append("30週線がほぼフラット化")
+                    reasons.append("価格がレンジ上限付近で推移")
+            else:
+                if slope > -0.002 and slope < 0.002: # フラット
+                    stage = "Stage 1"
+                    res['stage_label_ja'] = "第1段階（底固め）"
+                    sub = "mid"
+                    res['sub_stage_label_ja'] = "中期"
+                    res['entry_quality'] = "watch"
+                    res['entry_comment'] = "本格的なベース形成中。安値更新が止まり、エネルギーを蓄積している段階です。"
+                    res['description'] = "30週線が横ばいになり、方向感を探っている状態です。"
+                    reasons.append("30週線が完全にフラット")
+                    reasons.append("方向感がなく、レンジ内での推移")
+                else:
+                    stage = "Stage 3"
+                    res['stage_label_ja'] = "第3段階（天井形成）"
+                    sub = "mid"
+                    res['sub_stage_label_ja'] = "中期"
+                    res['entry_quality'] = "avoid"
+                    res['entry_comment'] = "天井圏での揉み合い。30週線を割り込んでおり、分配局面の可能性が高いです。"
+                    res['description'] = "上昇トレンドが終わり、価格が不安定になっています。"
+                    reasons.append("30週線の傾きが消失")
+                    reasons.append("価格がMAを頻繁に跨ぎ、サポートが失われている")
+
+        res['stage'] = stage
+        res['sub_stage'] = sub
+        res['full_label'] = f"{stage} {sub}"
+        res['full_label_ja'] = f"{res['stage_label_ja']}・{res['sub_stage_label_ja']}"
+        res['reason'] = reasons
+        res['trend_status'] = "uptrend" if slope > 0.01 else ("downtrend" if slope < -0.01 else "sideways")
+        res['volume_status'] = "above_average" if vol_ratio > 1.2 else ("below_average" if vol_ratio < 0.8 else "normal")
+        res['breakout_status'] = "confirmed" if (stage == "Stage 2" and sub == "early") else "none"
+
+        # トレンド継続週数
+        count = 0
+        tmp_df = df_w.iloc[::-1]
+        cur_above = (p > ma30)
+        for idx, row in tmp_df.iterrows():
+            if pd.isna(row['MA30']): break
+            if (row['Close'] > row['MA30']) == cur_above:
+                count += 1
+            else:
+                break
+        res['weeks_in_current_trend'] = count
+
+    except Exception as e:
+        print(f"WEINSTEIN ERROR: {e}")
+        
+    return res
+
 def create_recommendation_pie_chart(recs_summary: pd.DataFrame):
     """アナリストの推奨レーティング構成をパイチャートで表示。"""
     if recs_summary is None or recs_summary.empty:
@@ -2506,8 +2741,8 @@ def render_stock_analyzer():
             st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
             
             # ─── タブ切り替え ───
-            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_risk, tab_ai, tab_cio = st.tabs(
-                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
+            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_risk, tab_ai, tab_cio = st.tabs(
+                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
             )
 
             # 1. 基本情報
@@ -2905,6 +3140,97 @@ def render_stock_analyzer():
                     st.markdown("<br>", unsafe_allow_html=True)
                     for k, v in sepa.items():
                         st.markdown(f"**{k}**: {'✅' if v['pass'] else '❌'}  \n*{v['desc']}*")
+    
+            # 6. Weinstein Stage Analysis
+            with tab_weinstein:
+                st.divider()
+                st.markdown('<div class="section-title">📊 スタン・ワインスタイン・ステージ分析</div>', unsafe_allow_html=True)
+                
+                with st.spinner("週足データを解析中..."):
+                    w_stage = evaluate_weinstein_stage(ticker)
+                
+                if w_stage["stage"] != "Unknown":
+                    # ステージ表示カード
+                    col_wa, col_wb = st.columns([1, 2])
+                    
+                    with col_wa:
+                        # ステージの色設定
+                        stage_colors = {
+                            "Stage 1": "#64748b", # Gray
+                            "Stage 2": "#10b981", # Green
+                            "Stage 3": "#f59e0b", # Orange
+                            "Stage 4": "#ef4444"  # Red
+                        }
+                        s_color = stage_colors.get(w_stage["stage"], "#ffffff")
+                        
+                        st.markdown(f"""
+                            <div style="background: rgba(255,255,255,0.05); border-left: 5px solid {s_color}; border-radius: 12px; padding: 20px; text-align: center;">
+                                <div style="font-size: 0.9rem; color: #94a3b8; margin-bottom: 5px;">現在のステージ</div>
+                                <div style="font-size: 2rem; font-weight: 800; color: {s_color};">{w_stage['stage']}</div>
+                                <div style="font-size: 1.1rem; font-weight: 600; color: #e2e8f0;">{w_stage['sub_stage_label_ja']}</div>
+                                <div style="font-size: 0.8rem; color: #64748b; margin-top: 5px;">({w_stage['stage_label_ja']})</div>
+                            </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # エントリー適性
+                        quality_labels = {
+                            "ideal": "💎 最良 (Ideal)",
+                            "good": "✅ 良好 (Good)",
+                            "watch": "🔭 監視 (Watch)",
+                            "avoid": "⚠️ 回避 (Avoid)"
+                        }
+                        q_color = "#10b981" if w_stage['entry_quality'] in ["ideal", "good"] else ("#f59e0b" if w_stage['entry_quality'] == "watch" else "#ef4444")
+                        st.markdown(f"""
+                            <div style="margin-top: 15px; background: rgba(0,0,0,0.2); border-radius: 10px; padding: 12px; text-align: center; border: 1px solid {q_color};">
+                                <span style="font-weight: 700; color: {q_color};">{quality_labels.get(w_stage['entry_quality'], '不明')}</span>
+                            </div>
+                        """, unsafe_allow_html=True)
+
+                    with col_wb:
+                        st.markdown(f"### {w_stage['entry_comment']}")
+                        st.write(w_stage['description'])
+                        
+                        st.markdown("#### 判定理由")
+                        for r in w_stage['reason']:
+                            st.markdown(f"- {r}")
+                            
+                        # メトリクス
+                        st.divider()
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("30週線乖離", f"{w_stage['price_vs_ma_pct']:+.1f}%")
+                        m2.metric("30週線傾き", f"{w_stage['ma_slope_pct']:+.1f}%")
+                        m3.metric("継続週数", f"{w_stage['weeks_in_current_trend']}週")
+
+                    # チャート表示
+                    st.divider()
+                    st.markdown("#### 📈 週足チャート & 30週移動平均線")
+                    # 週足データの再取得（チャート描画用）
+                    hist_3y = yf.Ticker(ticker).history(period="3y")
+                    if not hist_3y.empty:
+                        logic_w = {'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'}
+                        df_chart_w = hist_3y.resample('W-FRI').apply(logic_w).dropna()
+                        df_chart_w['MA30'] = df_chart_w['Close'].rolling(30).mean()
+                        
+                        fig_w = go.Figure()
+                        # ローソク足
+                        fig_w.add_trace(go.Candlestick(
+                            x=df_chart_w.index, open=df_chart_w['Open'], high=df_chart_w['High'], low=df_chart_w['Low'], close=df_chart_w['Close'],
+                            name="週足株価"
+                        ))
+                        # MA30
+                        fig_w.add_trace(go.Scatter(
+                            x=df_chart_w.index, y=df_chart_w['MA30'], line=dict(color='#00d2ff', width=2), name="30週移動平均線"
+                        ))
+                        
+                        fig_w.update_layout(
+                            **PLOTLY_LAYOUT,
+                            height=500,
+                            xaxis_rangeslider_visible=False,
+                            title=f"{ticker} 週足分析 (WeinStein Stage Analysis)"
+                        )
+                        st.plotly_chart(fig_w, use_container_width=True)
+                else:
+                    st.warning("この銘柄のステージ分析データを取得できませんでした。")
     
             # 7. リスク・予想
             with tab_risk:
