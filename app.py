@@ -3559,6 +3559,245 @@ def calculate_event_risk(er_data: dict) -> dict:
     }
 
 
+# ─────────────────────────────────────────────
+# CIO 7軸統合エンジン (build_cio_decision_inputs)
+# ─────────────────────────────────────────────
+
+@st.cache_data(ttl=1800)
+def build_cio_decision_inputs(ticker: str) -> dict:
+    """
+    7軸スコア統合エンジン。
+    各分析関数を安全に呼び出し、スコアを収集・正規化して返す。
+    個別関数が失敗してもフォールバック値で継続する。
+    """
+    details: dict = {}
+    scores: dict  = {}
+
+    # ── 1. トレンド (Stage分析 + SEPA) ──────────────────
+    try:
+        ws = evaluate_weinstein_stage(ticker)
+        details["weinstein"] = ws
+        stage_num = ws.get("stage_num", 0) or 0
+        sub = ws.get("substage", "mid")
+        # Stage2 = 満点方向。Stage1mid=60, Stage2early=75, Stage2mid=90, Stage2late=80
+        stage_base = {1: 40, 2: 85, 3: 40, 4: 15}.get(stage_num, 50)
+        sub_adj    = {"early": -8, "mid": 0, "late": -5}.get(sub, 0)
+        trend_score = min(100, max(0, stage_base + sub_adj))
+
+        # SEPA補正
+        try:
+            sepa = evaluate_sepa(ticker)
+            details["sepa"] = sepa
+            if sepa:
+                sepa_pct = sum(1 for v in sepa.values() if v.get("pass")) / max(1, len(sepa))
+                trend_score = int(trend_score * 0.65 + sepa_pct * 100 * 0.35)
+        except Exception:
+            pass
+    except Exception:
+        trend_score = 50
+
+    scores["trend_score"] = min(100, max(0, trend_score))
+
+    # ── 2. エントリータイミング ──────────────────────────
+    try:
+        _ws = details.get("weinstein") or evaluate_weinstein_stage(ticker)
+        et  = evaluate_entry_timing(ticker, _ws)
+        details["entry_timing"] = et
+        entry_score = et.get("entry_timing_score", 50) or 50
+    except Exception:
+        entry_score = 50
+
+    scores["entry_score"] = min(100, max(0, entry_score))
+
+    # ── 3. 相対強度 ───────────────────────────────────────
+    try:
+        from_rs = calculate_relative_strength_metrics
+        rs_raw  = fetch_relative_strength_data(ticker)
+        rs      = from_rs(rs_raw)
+        details["rs"] = rs
+        rs_score = rs.get("rs_score", 50) or 50
+    except Exception:
+        rs_score = 50
+
+    scores["rs_score"] = min(100, max(0, rs_score))
+
+    # ── 4. 決算品質 ───────────────────────────────────────
+    try:
+        eq_raw = fetch_earnings_quality_data(ticker)
+        eq     = calculate_earnings_quality(eq_raw)
+        details["earnings_quality"] = eq
+        earnings_score = eq.get("earnings_quality_score", 50) or 50
+    except Exception:
+        earnings_score = 50
+
+    scores["earnings_score"] = min(100, max(0, earnings_score))
+
+    # ── 5. 需給 ──────────────────────────────────────────
+    try:
+        sd_raw = fetch_supply_demand_extended(ticker)
+        sd     = calculate_supply_demand_score(sd_raw)
+        details["supply_demand"] = sd
+        sd_score = sd.get("supply_demand_score", 50) or 50
+    except Exception:
+        sd_score = 50
+
+    scores["supply_demand_score"] = min(100, max(0, sd_score))
+
+    # ── 6. バリュエーション ───────────────────────────────
+    try:
+        vb_raw = fetch_valuation_band_data(ticker)
+        vb     = calculate_valuation_band(vb_raw)
+        details["valuation"] = vb
+        valuation_score = vb.get("valuation_score_v2", 50) or 50
+    except Exception:
+        valuation_score = 50
+
+    scores["valuation_score"] = min(100, max(0, valuation_score))
+
+    # ── 7. イベント安全性 (100 - event_risk_score) ──────
+    try:
+        er_raw = fetch_event_risk_data(ticker)
+        er     = calculate_event_risk(er_raw)
+        details["event_risk"] = er
+        event_safety = max(0, 100 - (er.get("event_risk_score", 30) or 30))
+    except Exception:
+        event_safety = 70
+
+    scores["event_safety_score"] = min(100, max(0, event_safety))
+
+    # ── 総合スコア (7軸加重平均) ───────────────────────────
+    # 重み設定: トレンド・エントリーをやや重く、イベント安全性を軽く
+    weights = {
+        "trend_score":         0.20,
+        "entry_score":         0.20,
+        "rs_score":            0.15,
+        "earnings_score":      0.15,
+        "supply_demand_score": 0.12,
+        "valuation_score":     0.10,
+        "event_safety_score":  0.08,
+    }
+    total = sum(scores.get(k, 50) * w for k, w in weights.items())
+    # 残りの重み(100%に満たない場合)に対応するため正規化
+    weight_sum = sum(weights.values())
+    total_score = round(total / weight_sum, 1)
+
+    return {
+        "scores":       scores,
+        "total_score":  total_score,
+        "details":      details,
+    }
+
+
+def derive_final_judgment(cio_inputs: dict, ticker: str, data: dict) -> dict:
+    """
+    7軸スコアから最終投資判断を導く。
+    AI プロンプトにも渡せる構造化辞書を返す。
+    """
+    scores       = cio_inputs.get("scores", {})
+    total        = cio_inputs.get("total_score", 50)
+    details      = cio_inputs.get("details", {})
+
+    trend  = scores.get("trend_score", 50)
+    entry  = scores.get("entry_score", 50)
+    rs     = scores.get("rs_score", 50)
+    earn   = scores.get("earnings_score", 50)
+    sd     = scores.get("supply_demand_score", 50)
+    val    = scores.get("valuation_score", 50)
+    ev_sf  = scores.get("event_safety_score", 70)
+
+    # ── 最終判定ロジック ─────────────────────────────────
+    wait_event = (ev_sf < 40)  # イベントリスクが高い
+    trend_ok   = (trend >= 60)
+    entry_ok   = (entry >= 60)
+    rs_ok      = (rs    >= 55)
+
+    if total >= 72 and trend_ok and entry_ok and not wait_event:
+        verdict = "buy"
+        verdict_ja = "✅ 買い"
+        verdict_desc = "7軸スコアが高水準で揃っており、今が積極的なエントリー好機です。"
+    elif total >= 60 and trend_ok and not wait_event:
+        verdict = "pullback_buy"
+        verdict_ja = "📉 押し目買い"
+        verdict_desc = "トレンドは良好ですが、エントリータイミングの改善を待って押し目で入るのが合理的です。"
+    elif wait_event and total >= 55:
+        verdict = "wait_event"
+        verdict_ja = "⏳ イベント通過待ち"
+        verdict_desc = "銘柄の質は高いですが、直近のイベントリスクが解消されてからエントリーを検討してください。"
+    elif total >= 50:
+        verdict = "monitor"
+        verdict_ja = "👁️ 監視継続"
+        verdict_desc = "条件がまだ揃っていません。ウォッチリストに入れて条件成立を待ちましょう。"
+    else:
+        verdict = "pass"
+        verdict_ja = "🚫 見送り"
+        verdict_desc = "複数の軸でリスクが顕在化しており、現時点での投資は推奨しにくい局面です。"
+
+    # ── 強み ─────────────────────────────────────────────
+    axis_list = [
+        ("トレンド",         trend,  "週足ステージが良好で上昇トレンドが確立",  "トレンドが弱い局面"),
+        ("エントリー",       entry,  "日足でも買いタイミングが整っている",       "エントリータイミング不適切"),
+        ("相対強度",         rs,     "市場・セクターを上回るアウトパフォーマンス", "市場に劣後するパフォーマンス"),
+        ("決算品質",         earn,   "直近決算が強く成長の質も高い",             "決算品質に懸念あり"),
+        ("需給",             sd,     "出来高を伴い資金が流入している",           "需給が弱い"),
+        ("バリュエーション", val,    "成長率対比で評価倍率が妥当圏内",           "割高ゾーンにある"),
+        ("イベント安全性",   ev_sf,  "直近のイベントリスクが低い",               "決算・マクロイベントが近い"),
+    ]
+    strengths = [f"{nm}: {pos}" for nm, sc, pos, neg in axis_list if sc >= 65][:3]
+    risks     = [f"{nm}: {neg}" for nm, sc, pos, neg in axis_list if sc <=  40][:3]
+
+    if not strengths:
+        strengths = ["現時点で明確な強みが見当たりません。更なるデータをお待ちください。"]
+    if not risks:
+        risks     = ["現時点で顕著なリスクはありません。"]
+
+    # ── ベストエントリー条件 ──────────────────────────────
+    entry_conditions = []
+    if trend < 60:
+        entry_conditions.append("週足がStage 2に移行し、主要MAを上回ること")
+    if entry < 60:
+        entry_conditions.append("日足ベースで押し目・ブレイクアウトのパターンが形成されること")
+    if ev_sf < 50:
+        entry_conditions.append("決算・マクロイベントが通過し、イベントリスクが解消されること")
+    if rs < 55:
+        entry_conditions.append("RSラインが市場を上回り、相対強度が改善すること")
+    if not entry_conditions:
+        entry_conditions = ["現在の好条件が維持されること、出来高を伴ったブレイクアウトの確認"]
+
+    # ── 無効化条件 ────────────────────────────────────────
+    invalidation = []
+    price = data.get("price", 0) or 0
+    if price > 0:
+        stop_ref = round(price * 0.93, 2)
+        invalidation.append(f"株価が ${stop_ref:.2f}（現在値比-7%）を下回って終値をつけた場合")
+    invalidation.append("週足のStage 2から3への転換シグナルが出た場合")
+    if earn < 50:
+        invalidation.append("次の決算でEPS・売上が市場予想を大幅に下回った場合")
+
+    # ── 投資家タイプ分類 ──────────────────────────────────
+    if trend >= 65 and (rs >= 55) and entry >= 55:
+        inv_type = "モメンタム型（週足Stage2 + 相対強度）"
+    elif val >= 65 and earn >= 60:
+        inv_type = "グロース・クオリティ型（決算品質 + バリュエーション整合）"
+    elif sd >= 65:
+        inv_type = "需給主導型（機関流入 + 踏み上げ余地）"
+    else:
+        inv_type = "ウォッチ段階（条件未整備）"
+
+    return {
+        "verdict":         verdict,
+        "verdict_ja":      verdict_ja,
+        "verdict_desc":    verdict_desc,
+        "total_score":     total,
+        "strengths":       strengths,
+        "risks":           risks,
+        "entry_conditions": entry_conditions,
+        "invalidation":   invalidation,
+        "investor_type":  inv_type,
+        "scores":         scores,
+        "wait_event_flag": wait_event,
+    }
+
+
 def create_recommendation_pie_chart(recs_summary: pd.DataFrame):
     """アナリストの推奨レーティング構成をパイチャートで表示。"""
     if recs_summary is None or recs_summary.empty:
@@ -6013,242 +6252,190 @@ def render_stock_analyzer():
                 else:
                     st.warning("API Key が未設定です。")
     
-            # 9. CIO 総合投資判断ダッシュボード
+            # 9. CIO 総合投資判断ダッシュボード（7軸統合）
             with tab_cio:
                 st.divider()
-                st.markdown('<div class="section-title">🎯 CIO 総合投資判断ダッシュボード</div>', unsafe_allow_html=True)
-                st.caption("バリュエーション・モメンタム・財務の質を統合し、最終的な投資判断を支援します。")
-    
-                # ─── 必要データの取得 ───
-                with st.spinner("統合診断データを生成中…"):
-                    cio_fin, _ = fetch_financials(ticker)
-                    cio_adv = fetch_advanced_financials(ticker)
-                    cio_sepa = evaluate_sepa(ticker)
-                    cio_canslim = evaluate_canslim(ticker)
-                    cio_fscore = calculate_f_score(ticker)
-                    cio_hist = fetch_price_history(ticker, "1y")
-    
-                # ─── 1. 統合スコア算出 ───
-                scores = {}
-    
-                # 成長性 (CAN SLIM ベース, 0-100)
-                if cio_canslim:
-                    cs_passes = sum(1 for v in cio_canslim.values() if v.get('pass'))
-                    scores["成長性"] = min(100, int((cs_passes / max(1, len(cio_canslim))) * 100))
-                else:
-                    scores["成長性"] = 0
-    
-                # トレンド (SEPA ベース, 0-100)
-                if cio_sepa:
-                    sepa_passes = sum(1 for v in cio_sepa.values() if v.get('pass'))
-                    scores["トレンド"] = min(100, int((sepa_passes / max(1, len(cio_sepa))) * 100))
-                else:
-                    scores["トレンド"] = 0
-    
-                # 安全性 (F-Score ベース, 0-100)
-                if cio_fscore:
-                    f_passes = sum(1 for v in cio_fscore.values() if v.get('pass'))
-                    scores["安全性"] = min(100, int((f_passes / 9) * 100))
-                else:
-                    scores["安全性"] = 0
-    
-                # 割安性 (DCF + PER ベース, 0-100)
-                val_score = 50  # デフォルト
-                pe = data.get("pe_ratio")
-                if pe and pe > 0:
-                    if pe < 15:
-                        val_score = 90
-                    elif pe < 25:
-                        val_score = 70
-                    elif pe < 40:
-                        val_score = 50
-                    else:
-                        val_score = 25
-                # 新モデルによる補正
-                base_eps = data.get("eps_trailing")
-                if base_eps and base_eps > 0:
-                    try:
-                        # デフォルト設定 (10年、売上成長率、現在のPER) で算出
-                        def_g = data.get("revenue_growth", 0.1) if data.get("revenue_growth") is not None else 0.1
-                        def_pe = data.get("pe_ratio", 20) if data.get("pe_ratio") is not None else 20
-                        
-                        # ダイナミック目標年利の適用 (CIOダッシュボード用)
-                        beta_cio = data.get("beta", 1.0) if data.get("beta") is not None else 1.0
-                        eps_g_cio = data.get("eps_growth", def_g) if data.get("eps_growth") is not None else 0.1
-                        def_r = 0.05 + (beta_cio * 0.05) + (max(0, eps_g_cio) * 0.2)
-                        
-                        val_res = calculate_earnings_valuation(base_eps, def_g, 10, def_pe, def_r)
-                        
-                        if val_res and data.get("price"):
-                            val_gap = (val_res["total_value"] - data["price"]) / data["price"]
-                            if val_gap > 0.5:
-                                val_score = min(100, val_score + 25)
-                            elif val_gap > 0:
-                                val_score = min(100, val_score + 10)
-                            elif val_gap < -0.3:
-                                val_score = max(0, val_score - 20)
-                    except Exception:
-                        pass
-                scores["割安性"] = val_score
-    
-                # モメンタム (52週高値からの距離 + RSI + エントリータイミングスコア)
-                mom_score = 50
-                if data.get("price") and data.get("fifty_two_week_high") and data.get("fifty_two_week_low"):
-                    h52 = data["fifty_two_week_high"]
-                    l52 = data["fifty_two_week_low"]
-                    p = data["price"]
-                    pos = (p - l52) / (h52 - l52) if (h52 - l52) > 0 else 0.5
-                    mom_score = int(pos * 100)
-                if cio_hist is not None and not cio_hist.empty:
-                    rsi_val = cio_hist["RSI"].iloc[-1] if pd.notna(cio_hist["RSI"].iloc[-1]) else 50
-                    rsi_factor = max(0, 100 - abs(rsi_val - 55) * 2)
-                    mom_score = int(mom_score * 0.6 + rsi_factor * 0.4)
-                # エントリータイミングスコアを加味（週足×日足整合判定）
-                try:
-                    _et_ws = evaluate_weinstein_stage(ticker)
-                    _et    = evaluate_entry_timing(ticker, _et_ws)
-                    _et_score = _et.get("entry_timing_score", mom_score)
-                    mom_score = int(mom_score * 0.7 + _et_score * 0.3)
-                except Exception:
-                    pass
-                scores["モメンタム"] = min(100, max(0, mom_score))
-    
-                # ─── 2. レーダーチャート & 総合スコア表示 ───
-                col_radar, col_summary = st.columns([1, 1])
-    
-                with col_radar:
-                    st.markdown("#### 📡 5軸統合レーダーチャート")
-                    fig_radar = create_radar_chart(scores)
-                    st.plotly_chart(fig_radar, use_container_width=True)
-    
-                with col_summary:
-                    st.markdown("#### 📋 各軸スコア")
-                    total_avg = sum(scores.values()) / len(scores)
-    
-                    # 総合判定
-                    if total_avg >= 75:
-                        st.success(f"🟢 総合スコア: **{total_avg:.0f}点** — 強気シグナル")
-                    elif total_avg >= 50:
-                        st.warning(f"🟡 総合スコア: **{total_avg:.0f}点** — 中立")
-                    else:
-                        st.error(f"🔴 総合スコア: **{total_avg:.0f}点** — 弱気シグナル")
-    
-                    st.progress(total_avg / 100)
-                    st.markdown("<br>", unsafe_allow_html=True)
-    
-                    for axis_name, axis_score in scores.items():
-                        bar_color = "#34d399" if axis_score >= 70 else "#fbbf24" if axis_score >= 40 else "#f87171"
+                st.markdown('<div class="section-title">🎯 CIO 総合投資判断ダッシュボード（7軸統合）</div>', unsafe_allow_html=True)
+                st.caption("トレンド・エントリー・RS・決算品質・需給・バリュエーション・イベント安全性の7軸を統合し、最終投資判断を生成します。")
+
+                # ─── 7軸スコア収集（キャッシュ付き統合関数） ───
+                with st.spinner("7軸統合スコアを計算中（初回は少し時間がかかります）..."):
+                    cio_inputs  = build_cio_decision_inputs(ticker)
+                    final_judge = derive_final_judgment(cio_inputs, ticker, data)
+
+                scores_7     = cio_inputs.get("scores", {})
+                total_score  = cio_inputs.get("total_score", 50)
+                verdict      = final_judge.get("verdict", "monitor")
+                verdict_ja   = final_judge.get("verdict_ja", "👁️ 監視継続")
+                verdict_desc = final_judge.get("verdict_desc", "")
+                wait_event   = final_judge.get("wait_event_flag", False)
+
+                # ─── 1. 最終ジャッジバナー ───────────────────────
+                verdict_cfg = {
+                    "buy":          ("#10b981", "rgba(16,185,129,0.18)", "🟢 今すぐ買いの好機"),
+                    "pullback_buy": ("#34d399", "rgba(52,211,153,0.13)", "🔵 押し目を待って買い"),
+                    "wait_event":   ("#f59e0b", "rgba(245,158,11,0.13)", "⏳ イベント通過を待て"),
+                    "monitor":      ("#3b82f6", "rgba(59,130,246,0.13)", "👁️ ウォッチリスト継続"),
+                    "pass":         ("#ef4444", "rgba(239,68,68,0.13)",  "🚫 現時点では見送り"),
+                }
+                v_color, v_bg, v_top = verdict_cfg.get(verdict, verdict_cfg["monitor"])
+
+                st.markdown(
+                    f'<div style="background:{v_bg}; border:2px solid {v_color}; border-radius:14px; '
+                    f'padding:20px 24px; margin-bottom:16px;">'
+                    f'<div style="font-size:0.75rem; color:#94a3b8; letter-spacing:0.08em;">CIO 最終判断</div>'
+                    f'<div style="font-size:2rem; font-weight:900; color:{v_color}; margin:4px 0;">'
+                    f'{verdict_ja}</div>'
+                    f'<div style="font-size:0.95rem; color:#e2e8f0;">{verdict_desc}</div>'
+                    f'<div style="margin-top:10px; font-size:1.4rem; font-weight:700; color:#94a3b8;">'
+                    f'総合スコア: <span style="color:{v_color};">{total_score:.0f} / 100</span></div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+                if wait_event:
+                    st.warning("⚠️ イベントリスクが高い状態です。「📅 イベントリスク」タブで詳細を確認してください。")
+
+                # ─── 2. 7軸レーダーチャート + スコアバー ───────────
+                st.divider()
+                col_radar7, col_bars7 = st.columns([1, 1])
+
+                # レーダー用ラベル
+                radar_labels = {
+                    "trend_score":         "トレンド",
+                    "entry_score":         "エントリー",
+                    "rs_score":            "相対強度",
+                    "earnings_score":      "決算品質",
+                    "supply_demand_score": "需給",
+                    "valuation_score":     "バリュエーション",
+                    "event_safety_score":  "イベント安全性",
+                }
+                radar_scores = {radar_labels[k]: scores_7.get(k, 50) for k in radar_labels}
+
+                with col_radar7:
+                    st.markdown("#### 📡 7軸統合レーダーチャート")
+                    fig_radar7 = create_radar_chart(radar_scores)
+                    st.plotly_chart(fig_radar7, use_container_width=True)
+
+                with col_bars7:
+                    st.markdown("#### 📊 各軸スコア詳細")
+                    weights_disp = {
+                        "trend_score":         ("トレンド",         "週足Stage/SEPA",   0.20),
+                        "entry_score":         ("エントリー",       "週足+日足整合",     0.20),
+                        "rs_score":            ("相対強度",         "対SPY/セクター",    0.15),
+                        "earnings_score":      ("決算品質",         "売上/EPS/CF反応",  0.15),
+                        "supply_demand_score": ("需給",             "機関/空売/出来高", 0.12),
+                        "valuation_score":     ("バリュエーション", "PER帯/同業/PEG",   0.10),
+                        "event_safety_score":  ("イベント安全性",   "決算/FOMC/CPI",    0.08),
+                    }
+                    for key, (label, sub, wt) in weights_disp.items():
+                        sc = scores_7.get(key, 50)
+                        bar_color = "#10b981" if sc >= 70 else "#f59e0b" if sc >= 45 else "#ef4444"
                         st.markdown(f"""
-                        <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                            <span style="width: 90px; font-size: 0.85rem; color: #cbd5e1;">{axis_name}</span>
-                            <div style="flex: 1; height: 10px; background: rgba(255,255,255,0.08); border-radius: 5px; margin: 0 10px;">
-                                <div style="width: {axis_score}%; height: 100%; background: {bar_color}; border-radius: 5px;"></div>
-                            </div>
-                            <span style="font-size: 0.85rem; font-weight: 700; color: {bar_color};">{axis_score}</span>
+                        <div style="margin-bottom:10px;">
+                          <div style="display:flex; justify-content:space-between; font-size:0.8rem;">
+                            <span style="color:#e2e8f0; font-weight:600;">{label}
+                              <span style="color:#64748b; font-weight:400;"> ({sub})</span></span>
+                            <span style="color:{bar_color}; font-weight:700;">{sc} <span style="color:#64748b; font-size:0.7rem;">wt:{wt:.0%}</span></span>
+                          </div>
+                          <div style="height:8px; background:rgba(255,255,255,0.07); border-radius:4px; margin-top:4px;">
+                            <div style="width:{sc}%; height:100%; background:{bar_color}; border-radius:4px;"></div>
+                          </div>
                         </div>
                         """, unsafe_allow_html=True)
-    
-                # ─── 3. VCP & トレードプラン ───
+
+                # ─── 3. 強み / リスク / エントリー条件 / 無効化条件 ──
+                st.divider()
+                col_str, col_rsk = st.columns(2)
+
+                with col_str:
+                    st.markdown("#### ✅ 主な強み（上位3軸）")
+                    for s in final_judge.get("strengths", []):
+                        st.markdown(f"- **{s}**")
+
+                with col_rsk:
+                    st.markdown("#### ⚠️ 主なリスク")
+                    for r in final_judge.get("risks", []):
+                        st.markdown(f"- **{r}**")
+
+                st.divider()
+                col_ec, col_inv = st.columns(2)
+
+                with col_ec:
+                    st.markdown("#### 🎯 ベストエントリー条件")
+                    for ec in final_judge.get("entry_conditions", []):
+                        st.markdown(f"- {ec}")
+
+                with col_inv:
+                    st.markdown("#### 🚫 無効化条件（損切り基準）")
+                    for inv in final_judge.get("invalidation", []):
+                        st.markdown(f"- {inv}")
+
+                # ─── 4. 投資家タイプ & スコア一覧テーブル ──────────
+                st.divider()
+                col_type, col_table = st.columns([1, 2])
+                with col_type:
+                    st.markdown("#### 🏷️ 投資スタイル分類")
+                    inv_type = final_judge.get("investor_type", "—")
+                    st.markdown(
+                        f'<div style="background:rgba(59,130,246,0.13); border-left:4px solid #3b82f6; '
+                        f'border-radius:8px; padding:12px 16px;">'
+                        f'<div style="font-size:1.0rem; font-weight:700; color:#93c5fd;">{inv_type}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+
+                with col_table:
+                    st.markdown("#### 📋 7軸スコア一覧")
+                    table_rows = []
+                    for key, (label, sub, wt) in weights_disp.items():
+                        sc = scores_7.get(key, 50)
+                        emoji = "🟢" if sc >= 68 else "🟡" if sc >= 42 else "🔴"
+                        table_rows.append({
+                            "軸":   f"{emoji} {label}",
+                            "スコア": sc,
+                            "評価基準": sub,
+                            "重み": f"{wt:.0%}",
+                        })
+                    st.dataframe(table_rows, use_container_width=True, hide_index=True)
+
+                # ─── 5. VCP & トレードプラン（既存機能を移植） ──────
                 st.divider()
                 st.markdown('<div class="section-title">📐 VCP分析 & トレードプラン (ミネルヴィニ式)</div>', unsafe_allow_html=True)
-    
+
+                cio_hist = fetch_price_history(ticker, "1y")
                 if cio_hist is not None and not cio_hist.empty:
                     trade_plan = analyze_vcp_and_trade_plan(ticker, data, cio_hist)
-    
                     col_vcp, col_trade = st.columns(2)
-    
+
                     with col_vcp:
                         st.markdown("##### 🔬 ボラティリティ収縮 (VCP)")
                         vcp_status = trade_plan.get("vcp_status", "不明")
-                        is_contracting = "収縮" in vcp_status
-    
-                        if is_contracting:
+                        if "収縮" in vcp_status:
                             st.success(f"✅ {vcp_status}")
                         else:
                             st.warning(f"⚠️ {vcp_status}")
-    
                         st.caption(f"週間レンジ推移: {trade_plan.get('vcp_desc', '—')}")
-                        st.info("💡 VCP（Volatility Contraction Pattern）はボラティリティが段階的に縮小していくパターンです。ブレイクアウト前のベース形成の兆候として注目されます。")
-    
+                        st.info("💡 VCP はボラティリティが段階的に縮小するパターンです。ブレイクアウト前のベース形成の兆候として注目されます。")
+
                     with col_trade:
                         st.markdown("##### 📊 トレードプラン")
-    
-                        buy_point = trade_plan.get("buy_point")
-                        stop_loss = trade_plan.get("stop_loss_price")
-                        pos_size = trade_plan.get("position_size_pct")
+                        buy_point  = trade_plan.get("buy_point")
+                        stop_loss  = trade_plan.get("stop_loss_price")
+                        pos_size   = trade_plan.get("position_size_pct")
                         curr_price = data.get("price", 0)
-    
                         if buy_point:
                             gap_to_bp = ((buy_point - curr_price) / curr_price * 100) if curr_price else 0
-                            st.metric("⬆️ ブレイクアウト・ポイント (52週高値)", f"${buy_point:,.2f}",
-                                      delta=f"現在値から {gap_to_bp:+.1f}%", delta_color="normal")
-    
+                            st.metric("⬆️ ブレイクアウト・ポイント", f"${buy_point:,.2f}", delta=f"現在値から {gap_to_bp:+.1f}%")
                         if stop_loss:
                             loss_pct = ((stop_loss - buy_point) / buy_point * 100) if buy_point else -7
-                            st.metric("🛑 損切りライン (-7%)", f"${stop_loss:,.2f}",
-                                      delta=f"{loss_pct:.1f}%", delta_color="inverse")
-    
+                            st.metric("🛑 損切りライン (-7%)", f"${stop_loss:,.2f}", delta=f"{loss_pct:.1f}%", delta_color="inverse")
                         if pos_size:
                             st.metric("📏 推奨ポジションサイズ", f"{pos_size*100:.1f}%",
-                                      help="総資産の1.25%をリスク上限とし、損切り幅から逆算した推奨比率です。最大25%。")
-    
+                                      help="総資産の1.25%をリスク上限とし、損切り幅から逆算した推奨比率。最大25%。")
                 else:
                     st.info("価格データが取得できなかったため、VCP分析を実行できませんでした。")
-    
-                # ─── 4. CIO コメント自動生成 ───
-                st.divider()
-                st.markdown('<div class="section-title">📝 CIO 投資判断コメント</div>', unsafe_allow_html=True)
-    
-                # ルールベースの自動コメント生成
-                comments = []
-    
-                # 成長性
-                if scores["成長性"] >= 70:
-                    comments.append("📈 **成長性が高い**: CAN SLIM基準の大半を満たしており、業績モメンタムは力強い。")
-                elif scores["成長性"] <= 30:
-                    comments.append("📉 **成長性に懸念**: EPS成長率や売上モメンタムが基準を下回っている。")
-    
-                # トレンド
-                if scores["トレンド"] >= 70:
-                    comments.append("🏆 **強い上昇トレンド**: ミネルヴィニの Stage 2 条件を大半満たしており、テクニカル的に有利なポジション。")
-                elif scores["トレンド"] <= 30:
-                    comments.append("⚠️ **トレンドが弱い**: 中長期移動平均線を下回る局面にあり、新規エントリーは慎重に。")
-    
-                # 安全性
-                if scores["安全性"] >= 70:
-                    comments.append("🛡️ **財務健全性良好**: F-Scoreが高く、収益性・流動性・効率性が揃っている。")
-                elif scores["安全性"] <= 30:
-                    comments.append("🔴 **財務リスクあり**: F-Scoreが低く、レバレッジやキャッシュフローに課題がある可能性。")
-    
-                # 割安性
-                if scores["割安性"] >= 70:
-                    comments.append("💎 **割安な水準**: PERやDCF分析から、現在の株価は本質的価値に対してディスカウントされている可能性が高い。")
-                elif scores["割安性"] <= 30:
-                    comments.append("💸 **割高な水準**: バリュエーション指標が割高圏にあり、高い成長期待が既に織り込まれている。")
-    
-                # モメンタム
-                if scores["モメンタム"] >= 70:
-                    comments.append("🚀 **モメンタムが強い**: 52週高値圏で推移しており、RSIも良好な水準にある。")
-                elif scores["モメンタム"] <= 30:
-                    comments.append("⏸️ **モメンタムが弱い**: 52週安値圏にあり、底打ちのサインが出るまで待つべき局面。")
-    
-                # VCP
-                if cio_hist is not None and not cio_hist.empty:
-                    trade_plan_for_comment = analyze_vcp_and_trade_plan(ticker, data, cio_hist)
-                    if "収縮" in trade_plan_for_comment.get("vcp_status", ""):
-                        comments.append("🔍 **VCPパターンを形成中**: ボラティリティが段階的に縮小しており、ブレイクアウトの準備段階にある可能性。")
-    
-                # 総合判定
-                if total_avg >= 75:
-                    comments.append(f"\n🟢 **総合判定: 強気** — 5軸平均 {total_avg:.0f}点。モメンタム型の買いに適した条件が整いつつある。")
-                elif total_avg >= 50:
-                    comments.append(f"\n🟡 **総合判定: 中立** — 5軸平均 {total_avg:.0f}点。一部の指標に改善の余地がある。個別の強み/弱みを慎重に評価すべき。")
-                else:
-                    comments.append(f"\n🔴 **総合判定: 弱気** — 5軸平均 {total_avg:.0f}点。複数の軸でリスクが顕在化しており、新規投資は推奨しにくい局面。")
-    
-                comment_text = "\n\n".join(comments)
-                st.markdown(f'<div class="ai-report">{comment_text}</div>', unsafe_allow_html=True)
-    
+
                 st.caption("⚠️ 本ダッシュボードは情報提供を目的としたものであり、特定の投資行動を推奨するものではありません。投資判断はご自身の責任でお願いいたします。")
 
     else:
