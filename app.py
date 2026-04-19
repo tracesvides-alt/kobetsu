@@ -1004,6 +1004,33 @@ def render_short_term_ai_judge(ticker: str, data: dict, snap: dict):
             else:
                 st.error("AI分析の生成中にエラーが発生しました。時間を置いて再度お試しください。")
 
+def render_short_term_watchlist_panel(snap: dict):
+    """短期ウォッチリストの進捗と不足条件を表示する"""
+    import streamlit as st
+    if "watchlist_details" not in snap:
+        return
+        
+    det = snap["watchlist_details"]
+    
+    with st.container(border=True):
+        st.markdown(f"##### 📌 ウォッチリスト条件: {det['label']} ({det['met_count']}/{det['total_count']})")
+        
+        # 条件チェックリストを横並びチップで表示
+        checks_html = ""
+        for c in det["conditions"]:
+            if c["met"]:
+                checks_html += f"<span style='background:rgba(16,185,129,0.1); color:#10b981; padding:2px 10px; border-radius:12px; margin-right:8px; font-size:0.8rem; border:1px solid rgba(16,185,129,0.2);'>✅ {c['label']}</span>"
+            else:
+                checks_html += f"<span style='background:rgba(255,255,255,0.05); color:#94a3b8; padding:2px 10px; border-radius:12px; margin-right:8px; font-size:0.8rem; border:1px solid rgba(255,255,255,0.1);'>⚪ {c['label']}</span>"
+        
+        st.markdown(f"<div style='margin-bottom:15px; display:flex; flex-wrap:wrap; gap:8px;'>{checks_html}</div>", unsafe_allow_html=True)
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(f"**⚡️ 次のトリガー:**  \n<span style='color:#38bdf8;'>{det['next_trigger']}</span>", unsafe_allow_html=True)
+        with c2:
+            st.markdown(f"**🎯 行動計画:**  \n{det['action_if_triggered']}")
+
 @st.cache_data(ttl=86400)
 def get_translated_summary(summary_text: str) -> str:
     """事業概要をAIなしで安定して日本語に翻訳する。"""
@@ -5439,10 +5466,76 @@ def calculate_short_term_snapshot(ticker: str, data: dict) -> dict:
             res["setup_details"] = setup_res
             res["judgment"] = setup_res.get("label", "不明")
             # --------------------------------
+
+            # --- 短期ウォッチ条件判定の呼び出し ---
+            watchlist_res = evaluate_short_term_watchlist_conditions(data, breakout_res, vwap_res, res["trend"])
+            res["watchlist_details"] = watchlist_res
+            # --------------------------------
         except Exception:
             pass
             
     return res
+
+def evaluate_short_term_watchlist_conditions(data: dict, breakout_res: dict, vwap_res: dict, trend_label: str) -> dict:
+    """現在の状態に対して足りない条件と仕掛けトリガーを特定する"""
+    conditions = [
+        {"id": "breakout", "label": "20日高値更新 (ブレイク)", "met": breakout_res.get("status_id") == "breakout_candidate"},
+        {"id": "volume", "label": "出来高倍率 1.2x以上", "met": breakout_res.get("vol_ratio", 0) >= 1.2},
+        {"id": "vwap", "label": "VWAP上を維持", "met": vwap_res.get("status_id") in ["strong_today", "gap_monitor"]},
+        {"id": "trend", "label": "5/10/20日線 パーフェクトオーダー", "met": "上向き" in trend_label},
+        {"id": "gap_hold", "label": "当日寄り付き価格を維持", "met": data.get("price", 0) >= data.get("open", 0)}
+    ]
+    
+    met_count = sum(1 for c in conditions if c["met"])
+    missing = [c["label"] for c in conditions if not c["met"]]
+    
+    # ステータス決定
+    status_id = "monitor"
+    label = "監視継続"
+    if met_count == 5:
+        status_id = "setup_ready"
+        label = "条件ほぼ完成"
+    elif met_count == 4:
+        status_id = "one_missing"
+        label = "仕掛け条件まであと1つ"
+    elif met_count == 3:
+        status_id = "two_missing"
+        label = "仕掛け条件まであと2つ"
+    elif met_count <= 1:
+        status_id = "far"
+        label = "条件不足大"
+
+    # 次のトリガーとアクション
+    next_trigger = "条件不足のため、まずはトレンドの転換待ち"
+    action = "全条件の充足を待ってから仕掛けを検討"
+    
+    if missing:
+        if "20日高値更新 (ブレイク)" in missing:
+            next_trigger = "直近20日高値の上抜けを出来高伴って確認"
+            action = "ブレイク時にVWAP上であれば打診買い検討"
+        elif "出来高倍率 1.2x以上" in missing:
+            next_trigger = "価格維持したまま、出来高の急増を確認"
+            action = "エネルギーが乗ってくれば本格エントリー"
+        elif "VWAP上を維持" in missing:
+            next_trigger = "VWAPラインへの回帰と反発を確認"
+            action = "当日の平均コストを上回るまでは静観"
+        else:
+            next_trigger = f"{missing[0]}の充足を確認"
+            action = "セットアップ完成を待つ"
+    else:
+        next_trigger = "セットアップ完成済み。エントリータイミングを精査"
+        action = "現在値でのリスクリワードを考慮してエントリー"
+
+    return {
+        "status_id": status_id,
+        "label": label,
+        "conditions": conditions,
+        "missing_conditions": missing,
+        "next_trigger": next_trigger,
+        "action_if_triggered": action,
+        "met_count": met_count,
+        "total_count": len(conditions)
+    }
 
 def evaluate_short_term_vwap_gap(data: dict) -> dict:
     """当日データから簡易的なVWAP / ギャップ状態を判定する"""
@@ -5786,6 +5879,9 @@ def render_stock_analyzer():
                 
                 # 短期AIジャッジの表示
                 render_short_term_ai_judge(ticker, data, snap)
+                
+                # 短期ウォッチリスト条件表示
+                render_short_term_watchlist_panel(snap)
 
                 # 短期モード
                 tabs = st.tabs(["📊 基本情報", "🔍 チャート"])
