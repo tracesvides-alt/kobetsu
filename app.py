@@ -3922,8 +3922,15 @@ def build_cio_decision_inputs(ticker: str) -> dict:
     try:
         ws = evaluate_weinstein_stage(ticker)
         details["weinstein"] = ws
-        stage_num = ws.get("stage_num", 0) or 0
-        sub = ws.get("substage", "mid")
+        
+        ws_stage_str = ws.get("stage", "")
+        stage_num = 0
+        if "1" in ws_stage_str: stage_num = 1
+        elif "2" in ws_stage_str: stage_num = 2
+        elif "3" in ws_stage_str: stage_num = 3
+        elif "4" in ws_stage_str: stage_num = 4
+        
+        sub = ws.get("sub_stage", "mid")
         # Stage2 = 満点方向。Stage1mid=60, Stage2early=75, Stage2mid=90, Stage2late=80
         stage_base = {1: 40, 2: 85, 3: 40, 4: 15}.get(stage_num, 50)
         sub_adj    = {"early": -8, "mid": 0, "late": -5}.get(sub, 0)
@@ -3957,7 +3964,14 @@ def build_cio_decision_inputs(ticker: str) -> dict:
     # ── 3. 相対強度 ───────────────────────────────────────
     try:
         from_rs = calculate_relative_strength_metrics
-        rs_raw  = fetch_relative_strength_data(ticker)
+        # セクター情報を取得（RSデータ取得に必須）
+        sector_info = ""
+        try:
+            sector_info = yf.Ticker(ticker).info.get("sector", "")
+        except:
+            pass
+        
+        rs_raw  = fetch_relative_strength_data(ticker, sector_info)
         rs      = from_rs(rs_raw)
         details["rs"] = rs
         rs_score = rs.get("rs_score", 50) or 50
@@ -4945,6 +4959,73 @@ def render_theme_explorer():
             st.warning(f"🔍 『{search_query}』に一致するテーマは見つかりませんでした。別のキーワード（日本語・英語）をお試しください。")
 
 
+def render_top_summary_cards(ticker: str, data: dict):
+    """
+    最上部（タブ群の上）で個別銘柄の重要ステータスを一瞬で把握するためのサマリー帯。
+    データが存在しない項目は「—」で流す。
+    """
+    try:
+        with st.spinner("分析サマリーをロード中..."):
+            cio_inputs  = build_cio_decision_inputs(ticker)
+        
+        scores      = cio_inputs.get("scores", {})
+        total_score = cio_inputs.get("total_score", "—")
+        
+        # AI/ジャッジ系の情報を抽出
+        final_judge = derive_final_judgment(cio_inputs, ticker, data)
+        verdict_ja  = final_judge.get("verdict_ja", "—")
+        
+        # Weinstein Stage
+        stage = "—"
+        if "weinstein" in cio_inputs.get("details", {}):
+            ws = cio_inputs["details"]["weinstein"]
+            ws_stg = ws.get('stage', 'Stage ?')
+            if ws_stg in ("Unknown", "?", ""):
+                ws_stg = "Stage ?"
+            stage = f"{ws_stg} {ws.get('sub_stage', '')}".strip()
+            
+        # Entry Timing
+        entry_status = "—"
+        if "entry_timing" in cio_inputs.get("details", {}):
+            et = cio_inputs["details"]["entry_timing"]
+            st_text = et.get("entry_status_label_ja", "—")
+            # 少し文字列を詰める
+            entry_status = st_text.replace("️", "").replace(" ", "").split("（")[0][:6] 
+            
+        # RS
+        rs_score = scores.get("rs_score", "—")
+        if isinstance(rs_score, (int, float)): rs_score = f"{int(rs_score)}"
+            
+        # Event Risk
+        event_status = "—"
+        if "event_safety_score" in scores:
+            score = scores["event_safety_score"]
+            if score >= 70: event_status = "🟢 低(安全)"
+            elif score >= 40: event_status = "🟡 中(注意)"
+            else: event_status = "🔴 高(警戒)"
+            
+        # Expected Value
+        ev_str = "—"
+        scenario_res = calculate_scenario_expected_value(ticker, data, cio_inputs)
+        if scenario_res and scenario_res.get("expected_value_status") != "error":
+            ev_pct = scenario_res.get("expected_value_pct", 0)
+            ev_str = f"{ev_pct:+.1f}%"
+            
+        st.markdown("<div style='padding: 12px; background: rgba(255,255,255,0.03); border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>", unsafe_allow_html=True)
+        cols = st.columns(7)
+        cols[0].metric("CIO 点数", f"{total_score}")
+        cols[1].metric("AI 判定", verdict_ja.replace("️",""))
+        cols[2].metric("Stage", stage)
+        cols[3].metric("Entry", entry_status)
+        cols[4].metric("RS", rs_score)
+        cols[5].metric("Event", event_status)
+        cols[6].metric("EV (期待値)", ev_str)
+        st.markdown("</div>", unsafe_allow_html=True)
+        
+    except Exception as e:
+        # 全体を壊さないようにフォールバック
+        pass
+
 def render_stock_analyzer():
     """個別銘柄の詳細分析画面を表示。"""
     st.title("Momentum Master US")
@@ -4971,6 +5052,9 @@ def render_stock_analyzer():
             # ヘッダー情報
             st.markdown(f'<div class="company-name">{data["name"]} ({ticker})</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
+            
+            # 最上部サマリーカード帯
+            render_top_summary_cards(ticker, data)
             
             # ─── タブ切り替え ───
             tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_sd, tab_val, tab_scenario, tab_event, tab_risk, tab_cio, tab_playbook, tab_ai_final = st.tabs(
