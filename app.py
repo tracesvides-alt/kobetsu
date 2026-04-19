@@ -2052,6 +2052,294 @@ def calculate_relative_strength_metrics(rs_data: dict) -> dict:
 
     return m
 
+# ─────────────────────────────────────────────
+# エントリータイミング分析（週足 × 日足 整合判定）
+# ─────────────────────────────────────────────
+
+@st.cache_data(ttl=300)
+def fetch_entry_timing_price_data(ticker: str) -> pd.DataFrame:
+    """日足価格データを約1年分取得して返す。"""
+    try:
+        hist = yf.Ticker(ticker).history(period="1y", interval="1d")
+        if hist.empty:
+            return pd.DataFrame()
+        return hist[["Open", "High", "Low", "Close", "Volume"]].dropna()
+    except Exception as e:
+        print(f"ENTRY TIMING FETCH ERROR: {e}")
+        return pd.DataFrame()
+
+
+def _calc_rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    """シンプルなEMA平滑RSI。"""
+    delta = series.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
+    rs = gain / loss.replace(0, 1e-9)
+    return 100 - (100 / (1 + rs))
+
+
+def calculate_entry_timing_indicators(daily_df: pd.DataFrame) -> pd.DataFrame:
+    """日足DataFrameに各種テクニカル指標列を追加して返す。"""
+    if daily_df.empty or len(daily_df) < 55:
+        return daily_df
+    df = daily_df.copy()
+    df["MA20"]  = df["Close"].rolling(20).mean()
+    df["MA50"]  = df["Close"].rolling(50).mean()
+    df["MA5"]   = df["Close"].rolling(5).mean()
+    df["VOL_MA20"] = df["Volume"].rolling(20).mean()
+    df["HIGH_20"]  = df["High"].rolling(20).max()
+    df["HIGH_50"]  = df["High"].rolling(50).max()
+    df["LOW_20"]   = df["Low"].rolling(20).min()
+    df["RSI"] = _calc_rsi(df["Close"])
+    # ATR
+    hl = df["High"] - df["Low"]
+    hcp = (df["High"] - df["Close"].shift()).abs()
+    lcp = (df["Low"] - df["Close"].shift()).abs()
+    df["ATR"] = pd.concat([hl, hcp, lcp], axis=1).max(axis=1).rolling(14).mean()
+    # 乖離率
+    df["PRICE_VS_MA20"] = (df["Close"] / df["MA20"] - 1) * 100
+    df["PRICE_VS_MA50"] = (df["Close"] / df["MA50"] - 1) * 100
+    df["PRICE_VS_MA5"]  = (df["Close"] / df["MA5"]  - 1) * 100
+    df["VOLUME_RATIO"]  = df["Volume"] / df["VOL_MA20"].replace(0, 1)
+    return df
+
+
+def evaluate_daily_entry_setup(daily_df: pd.DataFrame) -> dict:
+    """日足の指標だけ見てエントリーパターンと日足スコアを返す。"""
+    base = {
+        "daily_setup": "unknown",
+        "daily_setup_label_ja": "不明",
+        "daily_score": 0,
+        "breakout_confirmed": False,
+        "pullback_ready": False,
+        "overextended": False,
+        "risk_flag": False,
+        "reason": [],
+    }
+    df = calculate_entry_timing_indicators(daily_df)
+    if df.empty or len(df) < 55:
+        base["reason"].append("データ不足")
+        return base
+
+    last = df.iloc[-1]
+    prev_high_20 = df["High"].iloc[-21:-1].max() if len(df) > 21 else last["High"]
+
+    price    = last["Close"]
+    ma20     = last["MA20"]
+    ma50     = last["MA50"]
+    ma5      = last["MA5"]
+    vol_r    = last["VOLUME_RATIO"]
+    rsi      = last["RSI"]
+    vs_ma20  = last["PRICE_VS_MA20"]
+    vs_ma50  = last["PRICE_VS_MA50"]
+    high_20  = last["HIGH_20"]
+    low_20   = last["LOW_20"]
+    atr      = last["ATR"]
+
+    reason = []
+    score = 50  # 中立ベース
+
+    # ─── 基本ポジション条件 ───
+    above_ma20 = price > ma20
+    above_ma50 = price > ma50
+    golden_cross = ma20 > ma50
+
+    if above_ma50:
+        score += 8
+        reason.append("株価が50日線の上で推移")
+    else:
+        score -= 15
+        reason.append("株価が50日線を下回る（弱気）")
+
+    if above_ma20:
+        score += 5
+        reason.append("株価が20日線の上で推移")
+    else:
+        score -= 8
+        reason.append("株価が20日線を下回る")
+
+    if golden_cross:
+        score += 8
+        reason.append("20日線 > 50日線（ゴールデン配列）")
+    else:
+        score -= 5
+        reason.append("20日線 < 50日線（デッドクロス）")
+
+    # ─── ブレイクアウト確認 ───
+    breakout = price >= prev_high_20 and vol_r >= 1.2
+    if breakout:
+        score += 15
+        reason.append(f"直近高値ブレイクを出来高増（{vol_r:.1f}x）で確認")
+        base["breakout_confirmed"] = True
+    elif price >= prev_high_20 and vol_r < 1.2:
+        score += 5
+        reason.append("高値付近だが出来高が伴っていない（弱いブレイク）")
+    else:
+        score -= 3
+        reason.append("直近高値ブレイクはまだ確認されていない")
+
+    # ─── 押し目反発確認 ───
+    near_ma20 = abs(vs_ma20) < 3.0
+    near_ma50 = abs(vs_ma50) < 5.0
+    rebounding = price > ma20 and df["Close"].iloc[-3:].is_monotonic_increasing
+    if not breakout and above_ma50 and (near_ma20 or near_ma50) and rebounding:
+        score += 12
+        reason.append("20日/50日線付近からの健全な押し目反発")
+        base["pullback_ready"] = True
+
+    # ─── 伸び切り（過熱）確認 ───
+    overex = vs_ma50 > 20 or rsi > 78 or (atr > 0 and (price - prev_high_20) / atr > 3)
+    if overex:
+        score -= 18
+        reason.append(f"50日線乖離 {vs_ma50:.1f}% or RSI {rsi:.0f} — 過熱の可能性")
+        base["overextended"] = True
+
+    # ─── ブレイク失敗リスク ───
+    recent_closes = df["Close"].iloc[-5:].values
+    fail_risk = bool(above_ma20 == False and price < low_20)
+    if fail_risk:
+        score -= 20
+        reason.append("直近安値を割り込んでいる（ブレイク失敗リスク）")
+        base["risk_flag"] = True
+
+    # 出来高トレンド
+    if vol_r >= 1.5:
+        score += 5
+        reason.append(f"出来高が平均の {vol_r:.1f}倍（資金流入）")
+    elif vol_r < 0.7:
+        score -= 5
+        reason.append("出来高が乾いている（関心薄）")
+
+    # ─── パターン分類 ───
+    score = max(0, min(100, score))
+
+    if fail_risk or (not above_ma50 and not above_ma20 and not golden_cross):
+        setup, label = "broken", "崩れ型"
+    elif overex and not breakout:
+        setup, label = "overextended", "伸び切り型"
+    elif breakout:
+        setup, label = "breakout", "ブレイクアウト型"
+    elif base["pullback_ready"]:
+        setup, label = "pullback", "押し目型"
+    elif above_ma50 and not breakout:
+        setup, label = "watch", "未確認型"
+    else:
+        setup, label = "watch", "監視型"
+
+    base.update({
+        "daily_setup": setup,
+        "daily_setup_label_ja": label,
+        "daily_score": score,
+        "reason": reason,
+    })
+    return base
+
+
+def evaluate_entry_timing(ticker: str, weekly_stage: dict) -> dict:
+    """週足ステージ分析と日足エントリー判定を統合し、最終エントリー評価を返す。"""
+    fallback = {
+        "entry_status": "watch",
+        "entry_status_label_ja": "監視",
+        "entry_timing_score": 30,
+        "timeframe_alignment": "misaligned",
+        "timeframe_alignment_label_ja": "不整合",
+        "entry_comment": "データ不足のため判断できません。",
+        "weekly_summary": "—",
+        "daily_summary": "—",
+        "daily_detail": {},
+    }
+
+    # 日足データ取得と指標計算
+    daily_df = fetch_entry_timing_price_data(ticker)
+    if daily_df.empty:
+        return fallback
+
+    daily = evaluate_daily_entry_setup(daily_df)
+
+    w_stage  = weekly_stage.get("stage", "Unknown")
+    w_sub    = weekly_stage.get("sub_stage", "unknown")
+    w_quality = weekly_stage.get("entry_quality", "avoid")
+    d_setup  = daily.get("daily_setup", "unknown")
+    d_score  = daily.get("daily_score", 30)
+
+    # ─── 週足評価点 ───
+    weekly_score = 0
+    if w_stage == "Stage 2":
+        if w_sub == "early":   weekly_score = 90
+        elif w_sub == "mid":   weekly_score = 70
+        elif w_sub == "late":  weekly_score = 45
+    elif w_stage == "Stage 1":
+        if w_sub == "late":    weekly_score = 55
+        else:                  weekly_score = 25
+    elif w_stage == "Stage 3":
+        if w_sub == "early":   weekly_score = 30
+        else:                  weekly_score = 10
+    elif w_stage == "Stage 4":
+        weekly_score = 5
+    else:
+        weekly_score = 20
+
+    # ─── 整合性判定 ───
+    bullish_weekly = w_stage == "Stage 2" or (w_stage == "Stage 1" and w_sub == "late")
+    bearish_weekly = w_stage in ("Stage 3", "Stage 4")
+    bullish_daily  = d_setup in ("breakout", "pullback")
+    bearish_daily  = d_setup == "broken"
+
+    if bullish_weekly and bullish_daily:
+        alignment = "aligned"; align_ja = "整合（両方向き）"
+    elif bullish_weekly and d_setup in ("watch", "overextended"):
+        alignment = "partially_aligned"; align_ja = "部分整合（週足は良好・日足は条件待ち）"
+    elif bullish_weekly and bearish_daily:
+        alignment = "misaligned"; align_ja = "不整合（週足は良好・日足が崩れ）"
+    elif bearish_weekly and bullish_daily:
+        alignment = "misaligned"; align_ja = "不整合（日足だけ反発・週足は下降）"
+    else:
+        alignment = "partially_aligned" if not bearish_weekly else "misaligned"
+        align_ja = "部分整合" if not bearish_weekly else "不整合"
+
+    # ─── 総合スコア ───
+    raw_score = weekly_score * 0.55 + d_score * 0.45
+    if alignment == "aligned":       raw_score = min(100, raw_score + 10)
+    elif alignment == "misaligned":  raw_score = max(0,   raw_score - 15)
+    timing_score = int(round(max(0, min(100, raw_score))))
+
+    # ─── エントリーステータス ───
+    if alignment == "aligned" and bullish_weekly and d_setup == "breakout" and timing_score >= 65:
+        status = "buy_now"; status_ja = "今すぐ買い"
+    elif bullish_weekly and d_setup == "pullback" and alignment in ("aligned", "partially_aligned"):
+        status = "buy_on_pullback"; status_ja = "押し目なら買い"
+    elif alignment == "misaligned" or bearish_weekly or d_setup == "broken":
+        status = "avoid"; status_ja = "見送り"
+    else:
+        status = "watch"; status_ja = "監視"
+
+    # ─── コメント生成 ───
+    comment_map = {
+        ("buy_now",        "aligned"):           f"週足 {w_stage}/{w_sub}・日足ブレイクアウト確認済み。エントリーに踏み切りやすいタイミング。",
+        ("buy_on_pullback","aligned"):           f"週足 {w_stage}/{w_sub}・日足は押し目からの反発。健全な調整後の買いタイミング。",
+        ("buy_on_pullback","partially_aligned"): f"週足は {w_stage}（{w_sub}）で良好。日足はまだ条件待ち。押し目が確認できれば買い検討可。",
+        ("watch",          "partially_aligned"): f"週足は {w_stage} だが日足の執行条件は未確認。ブレイクまたは押し目反発を待ちたい。",
+        ("watch",          "misaligned"):        "週足と日足の方向が一致していない。無理に新規参入する局面ではない。",
+        ("avoid",          "misaligned"):        f"週足 {w_stage}（{w_sub}）で大局が弱く、日足も崩れている。新規エントリーは推奨しない。",
+    }
+    entry_comment = comment_map.get(
+        (status, alignment),
+        f"週足 {w_stage}/{w_sub} × 日足 {daily.get('daily_setup_label_ja')} — 慎重に状況確認。"
+    )
+
+    return {
+        "entry_status":              status,
+        "entry_status_label_ja":     status_ja,
+        "entry_timing_score":        timing_score,
+        "timeframe_alignment":       alignment,
+        "timeframe_alignment_label_ja": align_ja,
+        "entry_comment":             entry_comment,
+        "weekly_summary":            f"{w_stage} / {w_sub} ({w_quality})",
+        "daily_summary":             daily.get("daily_setup_label_ja", "—"),
+        "daily_detail":              daily,
+    }
+
+
 def create_recommendation_pie_chart(recs_summary: pd.DataFrame):
     """アナリストの推奨レーティング構成をパイチャートで表示。"""
     if recs_summary is None or recs_summary.empty:
@@ -2882,8 +3170,8 @@ def render_stock_analyzer():
             st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
             
             # ─── タブ切り替え ───
-            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_risk, tab_ai, tab_cio = st.tabs(
-                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
+            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_risk, tab_ai, tab_cio = st.tabs(
+                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
             )
 
             # 1. 基本情報
@@ -3544,6 +3832,146 @@ def render_stock_analyzer():
                     else:
                         st.info("RSラインチャートの生成に必要なデータが不足しています。")
 
+            # ⏱ エントリー判定タブ
+            with tab_entry:
+                st.divider()
+                st.markdown('<div class="section-title">⏱ 週足 × 日足 エントリータイミング判定</div>', unsafe_allow_html=True)
+                st.caption("週足の大局トレンドと日足の執行タイミングを結合し、「今買ってよい状態か」を判断します。")
+
+                with st.spinner("週足・日足データを解析中..."):
+                    entry_ws = evaluate_weinstein_stage(ticker)
+                    entry_result = evaluate_entry_timing(ticker, entry_ws)
+
+                status     = entry_result.get("entry_status", "watch")
+                status_ja  = entry_result.get("entry_status_label_ja", "監視")
+                score_et   = entry_result.get("entry_timing_score", 0)
+                alignment  = entry_result.get("timeframe_alignment", "misaligned")
+                align_ja   = entry_result.get("timeframe_alignment_label_ja", "不整合")
+                comment_et = entry_result.get("entry_comment", "")
+                daily_d    = entry_result.get("daily_detail", {})
+
+                status_cfg = {
+                    "buy_now":         ("🟢 今すぐ買い",    "#10b981", "rgba(16,185,129,0.15)"),
+                    "buy_on_pullback": ("🟡 押し目なら買い", "#f59e0b", "rgba(245,158,11,0.15)"),
+                    "watch":           ("🔵 監視",           "#3b82f6", "rgba(59,130,246,0.15)"),
+                    "avoid":           ("🔴 見送り",         "#ef4444", "rgba(239,68,68,0.15)"),
+                }
+                st_label, st_color, st_bg = status_cfg.get(status, status_cfg["watch"])
+
+                align_cfg = {
+                    "aligned":           ("✅ 整合",    "#10b981"),
+                    "partially_aligned": ("⚠️ 部分整合", "#f59e0b"),
+                    "misaligned":        ("❌ 不整合",   "#ef4444"),
+                }
+                al_icon, al_color = align_cfg.get(alignment, ("⚠️", "#f59e0b"))
+
+                # ── 上段: サマリーカード ─────────────────────────────
+                col_e1, col_e2, col_e3 = st.columns([1.2, 1, 1])
+
+                with col_e1:
+                    score_color_e = "#10b981" if score_et >= 65 else ("#f59e0b" if score_et >= 40 else "#ef4444")
+                    st.markdown(
+                        f'<div style="background:{st_bg}; border-left:6px solid {st_color}; border-radius:12px; padding:18px 20px;">'
+                        f'<div style="font-size:0.8rem; color:#94a3b8;">エントリー判定</div>'
+                        f'<div style="font-size:1.6rem; font-weight:900; color:{st_color}; margin-top:4px;">{st_label}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+
+                with col_e2:
+                    score_color_e = "#10b981" if score_et >= 65 else ("#f59e0b" if score_et >= 40 else "#ef4444")
+                    st.markdown(
+                        f'<div style="text-align:center; padding:12px;">'
+                        f'<div style="font-size:0.8rem; color:#94a3b8;">タイミングスコア</div>'
+                        f'<div style="font-size:2.4rem; font-weight:900; color:{score_color_e};">{score_et}</div>'
+                        f'<div style="font-size:0.8rem; color:#64748b;">/ 100</div>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+
+                with col_e3:
+                    st.markdown(
+                        f'<div style="text-align:center; padding:12px;">'
+                        f'<div style="font-size:0.8rem; color:#94a3b8;">時間軸整合性</div>'
+                        f'<div style="font-size:1.05rem; font-weight:700; color:{al_color}; margin-top:8px;">{al_icon} {align_ja}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+
+                st.markdown(f'<div class="ai-report" style="margin-top:12px;">{comment_et}</div>', unsafe_allow_html=True)
+
+                # ── 週足 vs 日足 詳細カード ──────────────────────────
+                st.divider()
+                col_w, col_d = st.columns(2)
+
+                with col_w:
+                    st.markdown("##### 📅 週足判定（大局）")
+                    w_stg = entry_ws.get("stage", "—")
+                    w_sub = entry_ws.get("sub_stage", "—")
+                    w_lbl = entry_ws.get("stage_label_ja", "—")
+                    w_ql  = entry_ws.get("entry_quality", "—")
+                    wq_colors = {"ideal": "#10b981", "good": "#34d399", "watch": "#f59e0b", "avoid": "#ef4444"}
+                    wq_col = wq_colors.get(w_ql, "#94a3b8")
+                    st.markdown(f"**ステージ**: `{w_stg}` / `{w_sub}`")
+                    st.markdown(f"**ラベル**: {w_lbl}")
+                    st.markdown(f'**エントリー適性**: <span style="color:{wq_col}; font-weight:700;">{w_ql}</span>', unsafe_allow_html=True)
+                    w_comment = entry_ws.get("entry_comment", "")
+                    if w_comment:
+                        st.caption(w_comment)
+
+                with col_d:
+                    st.markdown("##### 📆 日足判定（執行）")
+                    d_lbl   = daily_d.get("daily_setup_label_ja", "—")
+                    d_score = daily_d.get("daily_score", 0)
+                    d_brk   = daily_d.get("breakout_confirmed", False)
+                    d_pull  = daily_d.get("pullback_ready", False)
+                    d_over  = daily_d.get("overextended", False)
+                    d_risk  = daily_d.get("risk_flag", False)
+
+                    d_icons = []
+                    if d_brk:  d_icons.append("✅ ブレイクアウト確認")
+                    if d_pull: d_icons.append("✅ 押し目反発")
+                    if d_over: d_icons.append("⚠️ 伸びきり注意")
+                    if d_risk: d_icons.append("🚨 崩れリスク")
+
+                    score_color_d = "#10b981" if d_score >= 65 else ("#f59e0b" if d_score >= 40 else "#ef4444")
+                    st.markdown(
+                        f'**パターン**: {d_lbl} &nbsp; <span style="color:{score_color_d}; font-weight:700;">{d_score}pt</span>',
+                        unsafe_allow_html=True
+                    )
+                    for ic in d_icons:
+                        st.markdown(f"- {ic}")
+                    st.markdown("**判定根拠:**")
+                    for r in daily_d.get("reason", [])[:5]:
+                        st.markdown(f"  - {r}")
+
+                # ── 日足チャート (MA20 / MA50) ─────────────────────
+                st.divider()
+                st.markdown("#### 📆 日足チャート (20日線 / 50日線)")
+                entry_daily_df = fetch_entry_timing_price_data(ticker)
+                if not entry_daily_df.empty and len(entry_daily_df) >= 55:
+                    df_ind = calculate_entry_timing_indicators(entry_daily_df)
+                    fig_ed = go.Figure()
+                    fig_ed.add_trace(go.Candlestick(
+                        x=df_ind.index, open=df_ind["Open"], high=df_ind["High"],
+                        low=df_ind["Low"], close=df_ind["Close"], name="日足"
+                    ))
+                    fig_ed.add_trace(go.Scatter(
+                        x=df_ind.index, y=df_ind["MA20"],
+                        line=dict(color="#f59e0b", width=1.5), name="20日線"
+                    ))
+                    fig_ed.add_trace(go.Scatter(
+                        x=df_ind.index, y=df_ind["MA50"],
+                        line=dict(color="#a78bfa", width=1.5), name="50日線"
+                    ))
+                    fig_ed.update_layout(
+                        **{**PLOTLY_LAYOUT, "height": 480, "xaxis_rangeslider_visible": False,
+                           "title": f"{ticker} 日足 (MA20 / MA50)"},
+                    )
+                    st.plotly_chart(fig_ed, use_container_width=True)
+                else:
+                    st.info("日足チャートの生成に必要なデータが不足しています。")
+
             # 7. リスク・予想
             with tab_risk:
                 st.divider()
@@ -3718,7 +4146,7 @@ def render_stock_analyzer():
                         pass
                 scores["割安性"] = val_score
     
-                # モメンタム (52週高値からの距離 + RSI)
+                # モメンタム (52週高値からの距離 + RSI + エントリータイミングスコア)
                 mom_score = 50
                 if data.get("price") and data.get("fifty_two_week_high") and data.get("fifty_two_week_low"):
                     h52 = data["fifty_two_week_high"]
@@ -3728,9 +4156,16 @@ def render_stock_analyzer():
                     mom_score = int(pos * 100)
                 if cio_hist is not None and not cio_hist.empty:
                     rsi_val = cio_hist["RSI"].iloc[-1] if pd.notna(cio_hist["RSI"].iloc[-1]) else 50
-                    # RSI 50付近が最も健全
                     rsi_factor = max(0, 100 - abs(rsi_val - 55) * 2)
                     mom_score = int(mom_score * 0.6 + rsi_factor * 0.4)
+                # エントリータイミングスコアを加味（週足×日足整合判定）
+                try:
+                    _et_ws = evaluate_weinstein_stage(ticker)
+                    _et    = evaluate_entry_timing(ticker, _et_ws)
+                    _et_score = _et.get("entry_timing_score", mom_score)
+                    mom_score = int(mom_score * 0.7 + _et_score * 0.3)
+                except Exception:
+                    pass
                 scores["モメンタム"] = min(100, max(0, mom_score))
     
                 # ─── 2. レーダーチャート & 総合スコア表示 ───
