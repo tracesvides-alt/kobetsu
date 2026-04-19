@@ -886,6 +886,14 @@ def generate_short_term_ai_verdict(ticker: str, data: dict, snap: dict) -> dict:
         vwap = snap.get("vwap_details", {})
         setup = snap.get("setup_details", {})
         
+        # 安全な文字列化
+        price_val = snap.get('price')
+        price_str = f"${price_val:.2f}" if price_val is not None else "N/A"
+        chg_val = snap.get('chg_pct')
+        chg_str = f"{chg_val:+.2f}%" if chg_val is not None else "N/A"
+        vol_val = snap.get('vol_ratio')
+        vol_str = f"{vol_val:.2f}x" if vol_val is not None else "N/A"
+        
         prompt = f"""
 あなたは米国株のデイトレーダー兼スキャルパー、短期スイングトレーダーのメンターです。
 以下の短期的な解析データ（20日高値、VWAP、出来高、トレンド）に基づき、
@@ -893,8 +901,8 @@ def generate_short_term_ai_verdict(ticker: str, data: dict, snap: dict) -> dict:
 
 【対象銘柄】
 - ティッカー: {ticker}
-- 価格: ${snap.get('price')} / 前日比: {snap.get('chg_pct'):+.2f}%
-- 出来高倍率: {snap.get('vol_ratio'):.2f}x
+- 価格: {price_str} / 前日比: {chg_str}
+- 出来高倍率: {vol_str}
 
 【解析済データ】
 - 短期トレンド: {snap.get('trend')}
