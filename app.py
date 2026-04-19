@@ -282,6 +282,8 @@ if "active_ticker" not in st.session_state:
     st.session_state.active_ticker = ""
 if "theme_search_query" not in st.session_state:
     st.session_state.theme_search_query = ""
+if "persistent_theme_query" not in st.session_state:
+    st.session_state.persistent_theme_query = ""
 
 # ─────────────────────────────────────────────
 # サイドバー・ナビゲーション
@@ -1038,6 +1040,40 @@ def render_short_term_watchlist_panel(snap: dict):
             st.markdown(f"**⚡️ 次のトリガー:**  \n<span style='color:#38bdf8;'>{det['next_trigger']}</span>", unsafe_allow_html=True)
         with c2:
             st.markdown(f"**🎯 行動計画:**  \n{det['action_if_triggered']}")
+
+def render_short_term_ranking_section():
+    """短期ランキングツールのセクションを表示する"""
+    with st.expander("🏆 短期注目銘柄ランキング (既存候補群から抽出)", expanded=False):
+        st.markdown('<div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 15px;">現在のテーマ検索結果やセクター候補銘柄を一括評価し、短期的なチャンスを炙り出します。</div>', unsafe_allow_html=True)
+        
+        c1, c2 = st.columns([1, 1])
+        source = c1.selectbox("ランキング対象ソース選択", ["テーマ検索結果", "セクター候補"])
+        
+        if st.button("🚀 短期ランキングを実行", use_container_width=True):
+            universe = get_short_ranking_universe(source)
+            
+            if not universe:
+                if source == "テーマ検索結果":
+                    st.warning("⚠️ テーマ検索結果がありません。先に「🔭 Theme Explorer」タブでキーワード検索を行ってください。")
+                else:
+                    st.warning("⚠️ セクター候補銘柄が見つかりませんでした。")
+            else:
+                st.info(f"📊 {len(universe)} 銘柄を解析中... (最大20件まで)")
+                ranking_df = evaluate_short_term_rankings(universe)
+                
+                if not ranking_df.empty:
+                    st.dataframe(
+                        ranking_df,
+                        use_container_width=True,
+                        column_config={
+                            "スコア": st.column_config.ProgressColumn("スコア", min_value=0, max_value=100, format="%d"),
+                            "前日比": st.column_config.TextColumn("前日比"),
+                        },
+                        hide_index=True
+                    )
+                    st.success("✅ スコアの高い順に並び替えました。狙い目の銘柄を下の詳細分析でチェックしてください。")
+                else:
+                    st.error("❌ 解析中にエラーが発生したか、有効な銘柄が見つかりませんでした。")
 
 def render_short_term_alert_panel(snap: dict):
     """短期アラート条件を上下対比で表示する"""
@@ -5211,10 +5247,18 @@ def render_theme_explorer():
     for i, tag in enumerate(tags):
         if tag_cols[i].button(tag, use_container_width=True):
             st.session_state.theme_search_query = tag
+            st.session_state.persistent_theme_query = tag
             st.rerun()
 
     # 検索入力
     search_query = st.text_input("🔍 キーワード検索 (部分一致)", key="theme_search_query", placeholder="例: データセンター, 核融合, サイバーセキュリティ, 量子...")
+
+    # 手動同期: ウィジェットが消えても値を保持するように
+    if search_query:
+        st.session_state.persistent_theme_query = search_query
+    elif "theme_search_query" in st.session_state and st.session_state.theme_search_query:
+        # タグクリック時などの同期
+        st.session_state.persistent_theme_query = st.session_state.theme_search_query
 
     if search_query:
         query = search_query.lower()
@@ -5634,6 +5678,104 @@ def evaluate_short_term_watchlist_conditions(data: dict, breakout_res: dict, vwa
         "total_count": len(conditions)
     }
 
+def get_short_ranking_universe(source_type: str) -> list[str]:
+    """対象ソースからティッカー一覧を取得する"""
+    db_path = os.path.join(os.path.dirname(__file__), "growth_drivers_db.json")
+    if not os.path.exists(db_path):
+        return []
+        
+    try:
+        with open(db_path, "r", encoding="utf-8") as f:
+            drivers_db = json.load(f)
+            
+        if source_type == "テーマ検索結果":
+            query = st.session_state.get("persistent_theme_query", "").lower()
+            if not query:
+                return []
+            tickers = []
+            for t, drivers in drivers_db.items():
+                for d in drivers:
+                    if query in d.get("theme", "").lower() or query in d.get("impact", "").lower():
+                        tickers.append(t)
+                        break
+            return tickers
+            
+        elif source_type == "セクター候補":
+            # セクター分析で扱っている全銘柄を対象とする
+            return list(drivers_db.keys())
+            
+    except Exception:
+        pass
+    return []
+
+def evaluate_short_term_rankings(ticker_list: list[str]) -> pd.DataFrame:
+    """銘柄リストに対して一括で短期解析を行い、ランキング用DataFrameを返す"""
+    if not ticker_list:
+        return pd.DataFrame()
+        
+    # 重複排除と制限（最大20件）
+    unique_tickers = list(dict.fromkeys(ticker_list))[:20]
+    
+    results = []
+    progress_bar = st.progress(0)
+    for i, ticker in enumerate(unique_tickers):
+        progress_bar.progress((i + 1) / len(unique_tickers))
+        try:
+            data, _ = fetch_stock_data(ticker)
+            if not data:
+                continue
+                
+            snap = calculate_short_term_snapshot(ticker, data)
+            brk = snap.get("breakout_details", {})
+            vwp = snap.get("vwap_details", {})
+            setp = snap.get("setup_details", {})
+            
+            # スコア計算 (加減点方式)
+            score = 50 # ベース
+            
+            # ブレイク
+            if brk.get("status_id") == "breakout_candidate": score += 30
+            elif brk.get("status_id") == "monitor": score -= 10
+            
+            # VWAP
+            if vwp.get("price_vs_vwap_pct", 0) > 0.2: score += 20
+            elif vwp.get("price_vs_vwap_pct", 0) < -0.2: score -= 20
+            
+            # ギャップ
+            if vwp.get("gap_pct", 0) >= 0.5: score += 15
+            elif vwp.get("gap_pct", 0) < 0 and vwp.get("status_id") == "gap_failed": score -= 15
+            
+            # トレンド
+            if "上向き" in snap.get("trend", ""): score += 20
+            elif "下向き" in snap.get("trend", ""): score -= 20
+            
+            # 出来高
+            if brk.get("vol_ratio", 0) >= 1.2: score += 15
+            
+            # 0-100に制限
+            final_score = max(0, min(100, score))
+            
+            results.append({
+                "Ticker": ticker,
+                "価格": f"${snap.get('price'):.2f}" if snap.get('price') else "—",
+                "前日比": f"{snap.get('chg_pct'):+.2f}%" if snap.get('chg_pct') is not None else "—",
+                "スコア": final_score,
+                "判定": snap.get("judgment", "不明"),
+                "出来高倍率": f"{brk.get('vol_ratio', 0):.2f}x",
+                "トレンド": snap.get("trend", "—"),
+                "VWAP": vwp.get("label", "—"),
+                "コメント": setp.get("comment", "").split("。")[0] # 最初の一文のみ
+            })
+        except Exception:
+            continue
+            
+    progress_bar.empty()
+    if not results:
+        return pd.DataFrame()
+        
+    df = pd.DataFrame(results)
+    return df.sort_values("スコア", ascending=False)
+
 def evaluate_short_term_vwap_gap(data: dict) -> dict:
     """当日データから簡易的なVWAP / ギャップ状態を判定する"""
     # 簡易VWAP (Typical Price)
@@ -5931,6 +6073,10 @@ def render_stock_analyzer():
             
             # --- 分析スタイル切替 ---
             style_mode = get_analysis_style_mode()
+            
+            # 短期ランキングセクション (スタイルの外に出しておくか、短期モード内に入れるか)
+            if style_mode == "短期モード":
+                render_short_term_ranking_section()
             
             tab_basic = tab_fund = tab_chart = tab_peers = tab_canslim = tab_sepa = tab_weinstein = tab_rs = tab_entry = tab_earnings = tab_sd = tab_val = tab_scenario = tab_event = tab_risk = tab_cio = tab_playbook = tab_ai_final = None
 
