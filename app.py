@@ -875,6 +875,135 @@ def generate_ai_final_verdict(ticker: str, data: dict, cio_inputs: dict, final_j
         print(f"AI Final Verdict Error: {e}")
         return None
 
+def generate_short_term_ai_verdict(ticker: str, data: dict, snap: dict) -> dict:
+    """短期モード用のAIジャッジを定型フォーマットで生成する。"""
+    if not GENAI_AVAILABLE:
+        return None
+
+    try:
+        # 解析データをまとめる
+        breakout = snap.get("breakout_details", {})
+        vwap = snap.get("vwap_details", {})
+        setup = snap.get("setup_details", {})
+        
+        prompt = f"""
+あなたは米国株のデイトレーダー兼スキャルパー、短期スイングトレーダーのメンターです。
+以下の短期的な解析データ（20日高値、VWAP、出来高、トレンド）に基づき、
+「今日・明日・数日内」の視点での投資判断を厳密に構造化データ形式（JSON）で出力してください。
+
+【対象銘柄】
+- ティッカー: {ticker}
+- 価格: ${snap.get('price')} / 前日比: {snap.get('chg_pct'):+.2f}%
+- 出来高倍率: {snap.get('vol_ratio'):.2f}x
+
+【解析済データ】
+- 短期トレンド: {snap.get('trend')}
+- 短期ブレイク判定: {breakout.get('label')} (Score: {breakout.get('score')})
+- VWAP/ギャップ判定: {vwap.get('label')} (Score: {vwap.get('score')})
+- 総合セットアップスコア: {setup.get('score')} / 100
+- 判定根拠の要約: {", ".join(setup.get('reasons', []))}
+
+これらのデータを総合的に解釈し、短期目線での最終ジャッジを下してください。
+必ず以下のJSONフォーマットで出力すること。キーの名前や階層は変更しないこと。
+あなたの意見や推測をJSONの外のテキストとして含めてはいけません（JSONのみを返すこと）。
+
+{{
+    "short_ai_verdict": "setup_candidate | buy_on_pullback | monitor | pass のいずれか1つ",
+    "short_ai_verdict_label_ja": "仕掛け候補 | 押し待ち | 監視 | 見送り のいずれか1つ",
+    "confidence_level": "high | medium | low のいずれか1つ",
+    "confidence_label_ja": "高確信 | 中確信 | 低確信 のいずれか1つ",
+    "one_line_summary": "短期判断を一言で表す1行要約（50文字程度）",
+    "top_reasons": [
+        "最大の判断理由1",
+        "最大の判断理由2",
+        "最大の判断理由3"
+    ],
+    "top_risks": [
+        "最大のリスク1",
+        "最大のリスク2"
+    ],
+    "action_plan": [
+        "具体的なエントリー/イグジットのアクション1",
+        "具体的なエントリー/イグジットのアクション2",
+        "具体的なエントリー/イグジットのアクション3"
+    ],
+    "invalidation_condition": "シナリオが無効化され、撤退すべき条件（例: VWAP明確割れ、当日安値更新など）"
+}}
+"""
+        response = AI_CLIENT.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=prompt,
+        )
+        # JSON部分を抽出
+        text = response.text
+        start_idx = text.find("{")
+        end_idx = text.rfind("}")
+        if start_idx != -1 and end_idx != -1:
+            clean_json = text[start_idx:end_idx+1]
+            return json.loads(clean_json)
+        return None
+    except Exception as e:
+        print(f"Short Term AI Verdict Error: {e}")
+        return None
+
+def render_short_term_ai_judge(ticker: str, data: dict, snap: dict):
+    """短期モード用のAIジャッジを表示する。"""
+    import streamlit as st
+    
+    if not GENAI_AVAILABLE:
+        st.warning("⚠️ Gemini APIが設定されていないため、AIジャッジを利用できません。")
+        return
+
+    st.markdown("#### ⚖️ 短期AIジャッジ (Short-Term Tactical View)")
+    
+    if st.button("🤖 AIに短期売買戦略を聞く", key=f"short_ai_btn_{ticker}"):
+        with st.spinner("AIが短期モメンタムを解析中..."):
+            verdict = generate_short_term_ai_verdict(ticker, data, snap)
+            
+            if verdict:
+                # 判定によって色を変更
+                color = "#10b981" # 仕掛け候補, 押し待ち
+                if verdict['short_ai_verdict'] == "pass": color = "#ef4444"
+                elif verdict['short_ai_verdict'] == "monitor": color = "#f59e0b"
+                
+                st.markdown(f"""
+                    <div style='padding: 24px; background: rgba(255,255,255,0.03); border-radius: 16px; border: 1px solid {color}44; margin-bottom: 24px;'>
+                        <div style='display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;'>
+                            <div>
+                                <div style='font-size: 0.85rem; color: #94a3b8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;'>AI Verdict</div>
+                                <div style='font-size: 1.8rem; font-weight: 800; color: {color};'>{verdict['short_ai_verdict_label_ja']}</div>
+                            </div>
+                            <div style='text-align: right;'>
+                                <div style='font-size: 0.85rem; color: #94a3b8; font-weight: 600;'>確信度</div>
+                                <div style='font-size: 1.1rem; font-weight: 700; color: #f8fafc;'>{verdict['confidence_label_ja']}</div>
+                            </div>
+                        </div>
+                        <div style='font-size: 1.1rem; color: #f1f5f9; font-weight: 600; margin-bottom: 20px; padding: 12px; background: rgba(255,255,255,0.05); border-radius: 8px;'>
+                            {verdict['one_line_summary']}
+                        </div>
+                        <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 24px;'>
+                            <div>
+                                <div style='font-size: 0.9rem; font-weight: 700; color: #10b981; margin-bottom: 10px; border-bottom: 1px solid #10b98133; padding-bottom: 4px;'>🚀 主なプラス材料</div>
+                                {"".join([f"<div style='font-size: 0.85rem; color: #e2e8f0; margin-bottom: 6px;'>• {r}</div>" for r in verdict['top_reasons']])}
+                            </div>
+                            <div>
+                                <div style='font-size: 0.9rem; font-weight: 700; color: #ef4444; margin-bottom: 10px; border-bottom: 1px solid #ef444433; padding-bottom: 4px;'>⚠️ 直近のリスク</div>
+                                {"".join([f"<div style='font-size: 0.85rem; color: #e2e8f0; margin-bottom: 6px;'>• {r}</div>" for r in verdict['top_risks']])}
+                            </div>
+                        </div>
+                        <div style='margin-top: 24px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1);'>
+                            <div style='font-size: 0.9rem; font-weight: 700; color: #38bdf8; margin-bottom: 12px;'>⏱ アクションプラン (売買戦略)</div>
+                            {"".join([f"<div style='font-size: 0.85rem; color: #e2e8f0; margin-bottom: 6px;'>✅ {a}</div>" for a in verdict['action_plan']])}
+                        </div>
+                        <div style='margin-top: 16px; padding: 12px; background: rgba(239,68,68,0.1); border-radius: 8px; border: 1px solid rgba(239,68,68,0.2);'>
+                            <div style='font-size: 0.85rem; font-weight: 700; color: #ef4444;'>❌ 撤退条件 (Invalidation)</div>
+                            <div style='font-size: 0.85rem; color: #f8fafc; margin-top: 4px;'>{verdict['invalidation_condition']}</div>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.error("AI分析の生成中にエラーが発生しました。時間を置いて再度お試しください。")
+
 @st.cache_data(ttl=86400)
 def get_translated_summary(summary_text: str) -> str:
     """事業概要をAIなしで安定して日本語に翻訳する。"""
@@ -5654,9 +5783,11 @@ def render_stock_analyzer():
                 with col_right:
                      # 短期VWAP詳細表示
                      render_short_term_vwap_panel(snap)
+                
+                # 短期AIジャッジの表示
+                render_short_term_ai_judge(ticker, data, snap)
 
                 # 短期モード
-                st.info("💡 短期分析モードは現在開発向け土台です。今後、出来高・VWAP・短期モメンタムなどの機能を追加予定です。")
                 tabs = st.tabs(["📊 基本情報", "🔍 チャート"])
                 tab_basic, tab_chart = tabs
 
