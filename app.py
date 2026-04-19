@@ -5184,6 +5184,70 @@ def render_trading_decision_summary(ticker: str, data: dict):
     except Exception as e:
         pass
 
+def evaluate_short_term_breakout(df: pd.DataFrame) -> dict:
+    """日足データから短期ブレイク状態を判定する"""
+    if df is None or len(df) < 25:
+        return {"short_breakout_status": "none", "short_breakout_status_label_ja": "取得不可", "comment": "十分なデータがありません。", "reason": []}
+
+    # 指標計算
+    current_idx = -1
+    current_price = df["Close"].iloc[current_idx]
+    current_vol = df["Volume"].iloc[current_idx]
+    
+    # 直近20日高値 (今日を除外した過去20日間)
+    hist_20 = df.iloc[-21:-1]
+    high_20 = hist_20["High"].max()
+    
+    # 出来高20日平均
+    vol_ma20 = hist_20["Volume"].mean()
+    vol_ratio = current_vol / vol_ma20 if vol_ma20 > 0 else 0
+    
+    # MA計算
+    ma5 = df["Close"].rolling(window=5).mean().iloc[current_idx]
+    ma10 = df["Close"].rolling(window=10).mean().iloc[current_idx]
+    ma20 = df["Close"].rolling(window=20).mean().iloc[current_idx]
+    
+    # 条件判定
+    is_above_high = current_price > high_20
+    is_near_high = current_price > high_20 * 0.985
+    good_vol = vol_ratio > 1.2
+    bullish_ma = ma5 > ma10 > ma20
+    
+    res = {
+        "status_id": "monitor",
+        "label": "監視",
+        "score": 50,
+        "reason": [],
+        "high_20": high_20,
+        "vol_ratio": vol_ratio,
+        "dist_to_high_pct": (current_price / high_20 - 1) * 100
+    }
+    
+    if is_above_high and good_vol and bullish_ma:
+        res.update({"status_id": "breakout_candidate", "label": "ブレイク候補 🚀", "score": 90})
+        res["reason"] = ["株価が20日高値を上抜け", "出来高が20日平均を1.2倍以上上回る", "5日・10日・20日線がパーフェクトオーダー"]
+    elif is_near_high and bullish_ma:
+        res.update({"status_id": "breakout_approaching", "label": "ブレイク接近 📈", "score": 75})
+        res["reason"] = ["株価が20日高値に接近中", "短期移動平均線が上向きの並び"]
+    elif current_price < ma20 or ma5 < ma10:
+        res.update({"status_id": "pass", "label": "見送り ⚖️", "score": 20})
+        res["reason"] = ["短期トレンドが崩れている", "20日線を下回っている"]
+    else:
+        res.update({"status_id": "monitor", "label": "監視 👁️", "score": 50})
+        res["reason"] = ["トレンドは崩れていないが、明確なブレイクセットアップ以前"]
+    
+    # コメント生成
+    if res["status_id"] == "breakout_candidate":
+        res["comment"] = "短期的にはブレイク仕掛け候補として監視・エントリー検討が可能な状態。"
+    elif res["status_id"] == "breakout_approaching":
+        res["comment"] = "高値更新準備中。出来高を伴う上抜けが発生するか、あるいは押し目を形成するかを注視。"
+    elif res["status_id"] == "pass":
+        res["comment"] = "トレンドが弱く、短期トレードの対象とはなりにくい局面です。"
+    else:
+        res["comment"] = "現時点では明確な短期ブレイクセットアップは見られません。"
+        
+    return res
+
 def calculate_short_term_snapshot(ticker: str, data: dict) -> dict:
     """短期モード用の重要指標を計算して返す"""
     res = {
@@ -5225,17 +5289,24 @@ def calculate_short_term_snapshot(ticker: str, data: dict) -> dict:
                 res["trend"] = "下向き ↘"
             else:
                 res["trend"] = "横ばい →"
+                
+            # --- 短期ブレイク判定の呼び出し ---
+            breakout_res = evaluate_short_term_breakout(hist)
+            res["judgment"] = breakout_res.get("label", "不明")
+            res["breakout_details"] = breakout_res
+            # --------------------------------
         except Exception:
             pass
             
     return res
 
-def render_short_term_summary_cards(ticker: str, data: dict):
+def render_short_term_summary_cards(ticker: str, data: dict, snap: dict = None):
     """短期モード用の横並びサマリーカードを描画する"""
     import streamlit as st
     
-    with st.spinner("短期スナップショットを取得中..."):
-        snap = calculate_short_term_snapshot(ticker, data)
+    if snap is None:
+        with st.spinner("短期スナップショットを取得中..."):
+            snap = calculate_short_term_snapshot(ticker, data)
         
     st.markdown("<div style='padding: 12px; background: rgba(255,255,255,0.03); border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>", unsafe_allow_html=True)
     cols = st.columns(6)
@@ -5253,9 +5324,29 @@ def render_short_term_summary_cards(ticker: str, data: dict):
     cols[3].metric("出来高倍率", vr_str)
     
     cols[4].metric("短期トレンド", snap['trend'])
-    cols[5].metric("短期判定(仮)", snap['judgment'])
+    cols[5].metric("短期判定", snap['judgment'])
     
     st.markdown("</div>", unsafe_allow_html=True)
+
+def render_short_term_breakout_panel(snap: dict):
+    """短期ブレイク判定の詳細パネルを表示する"""
+    import streamlit as st
+    if "breakout_details" not in snap:
+        return
+        
+    det = snap["breakout_details"]
+    
+    with st.container(border=True):
+        st.markdown(f"##### 🚀 短期ブレイク判定: {det.get('label', '—')}")
+        c1, c2, c3 = st.columns([1, 1, 3])
+        c1.metric("判定スコア", f"{det.get('score', 0)}")
+        c2.metric("20日高値", f"${det.get('high_20', 0):.2f}")
+        c3.markdown(f"**AIコメント:**  \n{det.get('comment', '')}")
+        
+        if det.get("reason"):
+            st.markdown("**判定理由:**")
+            reason_html = "".join([f"<span style='background:rgba(16,185,129,0.1); color:#10b981; padding:2px 8px; border-radius:4px; margin-right:8px; font-size:0.85rem;'>✅ {r}</span>" for r in det["reason"]])
+            st.markdown(reason_html, unsafe_allow_html=True)
 
 def get_analysis_style_mode() -> str:
     """
@@ -5342,8 +5433,15 @@ def render_stock_analyzer():
                     ])
                     (tab_basic, tab_chart, tab_fund, tab_peers, tab_weinstein, tab_sepa, tab_rs, tab_entry, tab_scenario, tab_playbook, tab_earnings, tab_sd, tab_val, tab_event, tab_risk, tab_canslim, tab_cio, tab_ai_final) = tabs
             else:
-                # 短期サマリーカード追加
-                render_short_term_summary_cards(ticker, data)
+                # 短期データ取得
+                with st.spinner("短期データを解析中..."):
+                    snap = calculate_short_term_snapshot(ticker, data)
+
+                # 短期サマリーカード表示
+                render_short_term_summary_cards(ticker, data, snap=snap)
+                
+                # 短期ブレイク詳細表示
+                render_short_term_breakout_panel(snap)
 
                 # 短期モード
                 st.info("💡 短期分析モードは現在開発向け土台です。今後、出来高・VWAP・短期モメンタムなどの機能を追加予定です。")
