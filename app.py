@@ -1014,6 +1014,10 @@ def fetch_stock_data(ticker: str) -> tuple[dict | None, str | None]:
                 "avg_vol_10d": info.get("averageVolume10days"),
                 "short_ratio": info.get("shortPercentOfFloat"),
                 "ex_dividend_date": info.get("exDividendDate"),
+                "open": info.get("open") or info.get("regularMarketOpen"),
+                "day_high": info.get("dayHigh") or info.get("regularMarketDayHigh"),
+                "day_low": info.get("dayLow") or info.get("regularMarketDayLow"),
+                "volume": info.get("volume") or info.get("regularMarketVolume"),
             }
         
         # 2. infoが不完全な場合の fast_info 補完
@@ -5295,9 +5299,68 @@ def calculate_short_term_snapshot(ticker: str, data: dict) -> dict:
             res["judgment"] = breakout_res.get("label", "不明")
             res["breakout_details"] = breakout_res
             # --------------------------------
+
+            # --- VWAP/ギャップ判定の呼び出し ---
+            vwap_res = evaluate_short_term_vwap_gap(data)
+            res["vwap_details"] = vwap_res
+            # --------------------------------
         except Exception:
             pass
             
+    return res
+
+def evaluate_short_term_vwap_gap(data: dict) -> dict:
+    """当日データから簡易的なVWAP / ギャップ状態を判定する"""
+    # 簡易VWAP (Typical Price)
+    P = data.get("price")
+    H = data.get("day_high")
+    L = data.get("day_low")
+    O = data.get("open")
+    prev_C = data.get("prev_close")
+    
+    # yfinanceのデータが不完全な場合のガード
+    if not all([P, H, L, O, prev_C]):
+        return {"status_id": "none", "label": "データ不足", "score": 0, "reason": ["必要な当日データ(OHLC)が取得できませんでした。"]}
+
+    vwap_approx = (H + L + P) / 3
+    gap_pct = (O / prev_C - 1) * 100 if prev_C > 0 else 0
+    price_vs_vwap_pct = (P / vwap_approx - 1) * 100 if vwap_approx > 0 else 0
+    
+    res = {
+        "status_id": "neutral",
+        "label": "中立",
+        "score": 50,
+        "gap_pct": gap_pct,
+        "vwap_approx": vwap_approx,
+        "price_vs_vwap_pct": price_vs_vwap_pct,
+        "reason": [],
+        "comment": ""
+    }
+    
+    # 判定ロジック
+    is_gap_up = gap_pct >= 0.5
+    is_strong_gap = gap_pct >= 2.0
+    is_above_vwap = P > vwap_approx * 1.002
+    is_holding_gap = P >= O # 寄り付き価格を維持
+    
+    if is_gap_up and is_above_vwap and is_holding_gap:
+        res.update({"status_id": "strong_today", "label": "当日強い 🔥", "score": 85})
+        res["reason"] = ["ギャップアップで寄り付き", "現在値がVWAPを上回る", "寄り付き価格を維持（ギャップ維持）"]
+    elif is_gap_up:
+        res.update({"status_id": "gap_monitor", "label": "ギャップ監視 👀", "score": 65})
+        res["reason"] = ["ギャップアップしているがVWAP付近で攻防中"]
+    elif P < vwap_approx * 0.998 and P < O:
+        res.update({"status_id": "weak", "label": "弱い ⚠️", "score": 30})
+        res["reason"] = ["VWAPを下回る推移", "寄り付き後に失速"]
+        
+    # コメント
+    if res["status_id"] == "strong_today":
+        res["comment"] = "当日の資金流入が強く、高値圏で安定した買い優勢の展開です。"
+    elif res["status_id"] == "weak":
+        res["comment"] = "寄り付き後の売り圧力が強く、短期的な警戒が必要な状態です。"
+    else:
+        res["comment"] = "方向感を探る展開です。VWAPを支えに反発できるか、あるいは割り込むかを注視。"
+        
     return res
 
 def render_short_term_summary_cards(ticker: str, data: dict, snap: dict = None):
@@ -5341,11 +5404,32 @@ def render_short_term_breakout_panel(snap: dict):
         c1, c2, c3 = st.columns([1, 1, 3])
         c1.metric("判定スコア", f"{det.get('score', 0)}")
         c2.metric("20日高値", f"${det.get('high_20', 0):.2f}")
-        c3.markdown(f"**AIコメント:**  \n{det.get('comment', '')}")
+        c3.markdown(f"**分析コメント:**  \n{det.get('comment', '')}")
         
         if det.get("reason"):
             st.markdown("**判定理由:**")
             reason_html = "".join([f"<span style='background:rgba(16,185,129,0.1); color:#10b981; padding:2px 8px; border-radius:4px; margin-right:8px; font-size:0.85rem;'>✅ {r}</span>" for r in det["reason"]])
+            st.markdown(reason_html, unsafe_allow_html=True)
+
+def render_short_term_vwap_panel(snap: dict):
+    """短期VWAP/ギャップ判定の詳細パネルを表示する"""
+    import streamlit as st
+    if "vwap_details" not in snap:
+        return
+        
+    det = snap["vwap_details"]
+    
+    with st.container(border=True):
+        st.markdown(f"##### 💹 寄り付き・VWAP分析: {det.get('label', '—')}")
+        c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
+        c1.metric("ギャップ率", f"{det.get('gap_pct', 0):+.2f}%")
+        c2.metric("VWAP乖離", f"{det.get('price_vs_vwap_pct', 0):+.2f}%")
+        c3.metric("判定スコア", f"{det.get('score', 0)}")
+        c4.markdown(f"**分析コメント:**  \n{det.get('comment', '')}")
+        
+        if det.get("reason"):
+            st.markdown("**判定ポイント:**")
+            reason_html = "".join([f"<span style='background:rgba(56,189,248,0.1); color:#38bdf8; padding:2px 8px; border-radius:4px; margin-right:8px; font-size:0.85rem;'>🔹 {r}</span>" for r in det["reason"]])
             st.markdown(reason_html, unsafe_allow_html=True)
 
 def get_analysis_style_mode() -> str:
@@ -5442,6 +5526,9 @@ def render_stock_analyzer():
                 
                 # 短期ブレイク詳細表示
                 render_short_term_breakout_panel(snap)
+                
+                # 短期VWAP詳細表示
+                render_short_term_vwap_panel(snap)
 
                 # 短期モード
                 st.info("💡 短期分析モードは現在開発向け土台です。今後、出来高・VWAP・短期モメンタムなどの機能を追加予定です。")
