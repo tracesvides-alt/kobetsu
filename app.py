@@ -3255,6 +3255,310 @@ def calculate_valuation_band(vb_data: dict) -> dict:
     }
 
 
+# ─────────────────────────────────────────────
+# イベントリスク判定 (Event Risk Analysis)
+# ─────────────────────────────────────────────
+
+# ── マクロイベントカレンダー（固定辞書 — 定期更新 or 外部API差し替え可能） ──
+# 形式: {"名前": "YYYY-MM-DD"} — 直近 / 予定日を手動更新する簡易版
+_MACRO_EVENT_CALENDAR: list[dict] = [
+    # ── FOMC 2026年（年8回、概ね6週おき）──────────────────────────
+    {"name": "FOMC",     "date": "2026-01-29", "type": "fomc"},
+    {"name": "FOMC",     "date": "2026-03-19", "type": "fomc"},
+    {"name": "FOMC",     "date": "2026-05-07", "type": "fomc"},
+    {"name": "FOMC",     "date": "2026-06-18", "type": "fomc"},
+    {"name": "FOMC",     "date": "2026-07-30", "type": "fomc"},
+    {"name": "FOMC",     "date": "2026-09-17", "type": "fomc"},
+    {"name": "FOMC",     "date": "2026-11-05", "type": "fomc"},
+    {"name": "FOMC",     "date": "2026-12-17", "type": "fomc"},
+    # ── CPI 2026年（毎月中旬、概ね第2週水曜）────────────────────────
+    {"name": "CPI",      "date": "2026-01-14", "type": "cpi"},
+    {"name": "CPI",      "date": "2026-02-11", "type": "cpi"},
+    {"name": "CPI",      "date": "2026-03-11", "type": "cpi"},
+    {"name": "CPI",      "date": "2026-04-10", "type": "cpi"},
+    {"name": "CPI",      "date": "2026-05-13", "type": "cpi"},
+    {"name": "CPI",      "date": "2026-06-10", "type": "cpi"},
+    {"name": "CPI",      "date": "2026-07-09", "type": "cpi"},
+    {"name": "CPI",      "date": "2026-08-12", "type": "cpi"},
+    {"name": "CPI",      "date": "2026-09-09", "type": "cpi"},
+    {"name": "CPI",      "date": "2026-10-14", "type": "cpi"},
+    {"name": "CPI",      "date": "2026-11-12", "type": "cpi"},
+    {"name": "CPI",      "date": "2026-12-10", "type": "cpi"},
+    # ── 雇用統計 2026年（毎月第1金曜）──────────────────────────────
+    {"name": "雇用統計", "date": "2026-01-09", "type": "jobs"},
+    {"name": "雇用統計", "date": "2026-02-06", "type": "jobs"},
+    {"name": "雇用統計", "date": "2026-03-06", "type": "jobs"},
+    {"name": "雇用統計", "date": "2026-04-03", "type": "jobs"},
+    {"name": "雇用統計", "date": "2026-05-01", "type": "jobs"},
+    {"name": "雇用統計", "date": "2026-06-05", "type": "jobs"},
+    {"name": "雇用統計", "date": "2026-07-02", "type": "jobs"},
+    {"name": "雇用統計", "date": "2026-08-07", "type": "jobs"},
+    {"name": "雇用統計", "date": "2026-09-04", "type": "jobs"},
+    {"name": "雇用統計", "date": "2026-10-02", "type": "jobs"},
+    {"name": "雇用統計", "date": "2026-11-06", "type": "jobs"},
+    {"name": "雇用統計", "date": "2026-12-04", "type": "jobs"},
+]
+
+# セクター別イベント感応度マップ
+_SECTOR_EVENT_SENSITIVITY: dict[str, dict] = {
+    "Technology":             {"level": "high",   "ja": "テクノロジー — 規制・決算・金利変動に敏感"},
+    "Consumer Cyclical":      {"level": "high",   "ja": "一般消費財 — 景気・消費指標に敏感"},
+    "Communication Services": {"level": "high",   "ja": "通信/メディア — 広告単価・規制イベントに敏感"},
+    "Financial Services":     {"level": "high",   "ja": "金融 — 金利・信用イベントに敏感"},
+    "Healthcare":             {"level": "very_high", "ja": "ヘルスケア/バイオ — 承認・臨床試験結果で急変"},
+    "Energy":                 {"level": "high",   "ja": "エネルギー — 原油価格・OPEC政策に敏感"},
+    "Basic Materials":        {"level": "medium", "ja": "素材 — 商品市況・中国需要に感応"},
+    "Industrials":            {"level": "medium", "ja": "資本財 — ISM・貿易・受注統計に感応"},
+    "Real Estate":            {"level": "medium", "ja": "不動産 — 金利・住宅指標に感応"},
+    "Utilities":              {"level": "low",    "ja": "公益 — イベント感応が低い安定セクター"},
+    "Consumer Defensive":     {"level": "low",    "ja": "生活必需品 — 景気後退耐性が強い"},
+}
+
+
+@st.cache_data(ttl=1800)
+def fetch_event_risk_data(ticker: str) -> dict:
+    """イベントリスク判定に必要なデータを収集する。"""
+    result: dict = {"ticker": ticker}
+    try:
+        stock = yf.Ticker(ticker)
+        info  = stock.info
+
+        result["sector"]   = info.get("sector", "")
+        result["industry"] = info.get("industry", "")
+        result["beta"]     = info.get("beta")
+
+        # ── 次回決算日 ────────────────────────────────────
+        earnings_date = None
+        try:
+            cal = stock.calendar
+            if cal is not None and not cal.empty:
+                for key in ["Earnings Date", "earningsDate"]:
+                    if key in cal.index:
+                        raw = cal.loc[key]
+                        # 値が Timestamp の場合と配列の場合に両対応
+                        vals = raw.values if hasattr(raw, "values") else [raw]
+                        future = [
+                            v for v in vals
+                            if pd.notna(v) and pd.Timestamp(v).date() >= pd.Timestamp.now().date()
+                        ]
+                        if future:
+                            earnings_date = min(pd.Timestamp(v).date() for v in future)
+                        break
+        except Exception:
+            pass
+
+        # calendar で取れなかった場合 earnings_dates から取得
+        if earnings_date is None:
+            try:
+                ed = stock.earnings_dates
+                if ed is not None and not ed.empty:
+                    today = pd.Timestamp.now().normalize()
+                    future_idx = ed.index[ed.index >= today]
+                    if not future_idx.empty:
+                        earnings_date = future_idx[-1].date()  # 最も近い未来日
+            except Exception:
+                pass
+
+        result["earnings_date"] = earnings_date
+
+        # ── 配当落ち日 ────────────────────────────────────
+        try:
+            ex_div_raw = info.get("exDividendDate")
+            if ex_div_raw:
+                import datetime as _dt
+                ex_div = _dt.date.fromtimestamp(ex_div_raw) if isinstance(ex_div_raw, (int, float)) else pd.Timestamp(ex_div_raw).date()
+                result["ex_dividend_date"] = ex_div
+        except Exception:
+            pass
+
+        # ── 過去決算ボラティリティ（post EQ 1日騰落の絶対値平均） ──
+        try:
+            eq_raw = fetch_earnings_quality_data(ticker)  # キャッシュ活用
+            if eq_raw and not eq_raw.get("hist", pd.DataFrame()).empty:
+                hist = eq_raw["hist"]
+                avg_moves = []
+                for eqd in eq_raw.get("eq_dates", [])[-4:]:
+                    rxn = _post_earnings_reaction(hist, eqd)
+                    if rxn.get("ret_1d") is not None:
+                        avg_moves.append(abs(rxn["ret_1d"]))
+                result["avg_earnings_move_pct"] = round(sum(avg_moves) / len(avg_moves), 1) if avg_moves else None
+        except Exception:
+            result["avg_earnings_move_pct"] = None
+
+    except Exception as e:
+        print(f"EVENT RISK FETCH ERROR: {e}")
+
+    return result
+
+
+def calculate_event_risk(er_data: dict) -> dict:
+    """イベントリスクスコア（高いほどリスク大）と各指標を返す。"""
+    import datetime as _dt
+    today = _dt.date.today()
+
+    quality_flags: list[str] = []  # 安心材料（リスクが低い要因）
+    risk_flags:    list[str] = []  # 警戒材料
+
+    score = 0  # 0=リスク低, 高ほどリスク大
+
+    # ── 1. 個社決算リスク ──────────────────────────────
+    earnings_date   = er_data.get("earnings_date")
+    days_to_earn    = None
+    earn_risk       = "unknown"
+    earn_risk_ja    = "決算日不明"
+
+    if earnings_date:
+        days_to_earn = (earnings_date - today).days
+        avg_move = er_data.get("avg_earnings_move_pct")
+
+        if days_to_earn < 0:
+            # 決算通過済み
+            earn_risk = "passed"; earn_risk_ja = "決算通過済"
+            quality_flags.append(f"直近決算は通過済み（{abs(days_to_earn)}日前）— イベント通過後の安定期")
+        elif days_to_earn <= 3:
+            earn_risk = "imminent"; earn_risk_ja = "決算直前（3日以内）"
+            score += 35
+            risk_flags.append(f"次回決算まで {days_to_earn}日 — 今すぐの新規エントリーはギャンブル性が高い")
+            if avg_move and avg_move >= 5:
+                score += 10
+                risk_flags.append(f"過去の決算ジャンプが平均 ±{avg_move:.1f}% — 高ボラ銘柄")
+        elif days_to_earn <= 7:
+            earn_risk = "high"; earn_risk_ja = "決算接近（7日以内）"
+            score += 25
+            risk_flags.append(f"次回決算まで {days_to_earn}日 — 決算前の高ボラティリティ期")
+            if avg_move and avg_move >= 5:
+                score += 8; risk_flags.append(f"過去決算ジャンプ平均 ±{avg_move:.1f}%")
+        elif days_to_earn <= 14:
+            earn_risk = "medium"; earn_risk_ja = "決算2週間以内"
+            score += 15
+            risk_flags.append(f"次回決算まで {days_to_earn}日 — 決算前のポジション調整注意")
+        elif days_to_earn <= 30:
+            earn_risk = "low"; earn_risk_ja = "決算1ヶ月以内"
+            score += 5
+        else:
+            earn_risk = "safe"; earn_risk_ja = f"決算まで余裕あり（{days_to_earn}日後）"
+            quality_flags.append(f"次回決算まで {days_to_earn}日 — 決算リスク低")
+    else:
+        score += 8  # 不明は軽度リスク
+        risk_flags.append("次回決算日が取得できませんでした — 不確実性あり")
+
+    # ── 2. 配当落ち日 ──────────────────────────────────
+    ex_div = er_data.get("ex_dividend_date")
+    days_to_div = None
+    if ex_div and isinstance(ex_div, _dt.date):
+        days_to_div = (ex_div - today).days
+        if 0 <= days_to_div <= 5:
+            score += 8
+            risk_flags.append(f"配当落ち日まで {days_to_div}日 — 短期の株価調整に注意")
+        elif days_to_div < 0:
+            quality_flags.append("直近の配当落ち日は通過済み")
+
+    # ── 3. マクロイベント照合 ──────────────────────────
+    beta  = er_data.get("beta") or 1.0
+    macro_risk_level = "low"
+    macro_risk_ja    = "マクロイベントなし（1週間以内）"
+    nearest_macro_days = 999
+    nearest_macro_name = ""
+
+    for ev in _MACRO_EVENT_CALENDAR:
+        try:
+            ev_date = _dt.date.fromisoformat(ev["date"])
+            diff    = (ev_date - today).days
+            if 0 <= diff < nearest_macro_days:
+                nearest_macro_days = diff
+                nearest_macro_name = ev["name"]
+        except Exception:
+            pass
+
+    if nearest_macro_days <= 3:
+        macro_weight = min(int(15 * beta), 25)
+        score += macro_weight
+        macro_risk_level = "high"; macro_risk_ja = f"マクロ注意（{nearest_macro_name}まで{nearest_macro_days}日）"
+        risk_flags.append(f"{nearest_macro_name} が {nearest_macro_days}日後 — ベータ {beta:.1f}x の銘柄は感応度が高い")
+    elif nearest_macro_days <= 7:
+        macro_weight = min(int(8 * beta), 15)
+        score += macro_weight
+        macro_risk_level = "medium"; macro_risk_ja = f"マクロ軽度注意（{nearest_macro_name}まで{nearest_macro_days}日）"
+        risk_flags.append(f"{nearest_macro_name} が {nearest_macro_days}日後")
+    elif nearest_macro_days <= 14:
+        score += 3
+        macro_risk_level = "low_medium"; macro_risk_ja = f"マクロ {nearest_macro_name} まで{nearest_macro_days}日"
+    else:
+        quality_flags.append("直近2週間に主要マクロイベントなし")
+
+    # ── 4. セクター感応度 ─────────────────────────────
+    sector  = er_data.get("sector", "")
+    sec_cfg = _SECTOR_EVENT_SENSITIVITY.get(sector, {"level": "medium", "ja": "セクター感応度: 中"})
+    sec_level = sec_cfg["level"]
+    sec_label_ja = sec_cfg["ja"]
+    sec_score_map = {"very_high": 15, "high": 8, "medium": 3, "low": 0}
+    score += sec_score_map.get(sec_level, 3)
+
+    if sec_level in ("very_high", "high"):
+        risk_flags.append(f"セクター特性: {sec_label_ja}")
+    else:
+        quality_flags.append(f"セクター特性: {sec_label_ja}")
+
+    # ── 5. event_window_flag ────────────────────────────
+    event_window = (
+        (days_to_earn is not None and 0 <= days_to_earn <= 7) or
+        nearest_macro_days <= 5
+    )
+    high_vol_window = (
+        (days_to_earn is not None and 0 <= days_to_earn <= 3) or
+        (days_to_earn is not None and 0 <= days_to_earn <= 14 and beta >= 1.5)
+    )
+
+    score = max(0, min(100, score))
+
+    # ── ステータス ─────────────────────────────────────
+    if score >= 50:
+        status = "high";   status_ja = "イベントリスクが高い"
+    elif score >= 25:
+        status = "medium"; status_ja = "イベントリスクは中程度"
+    else:
+        status = "low";    status_ja = "イベントリスクは低い"
+
+    wait_flag = (score >= 30 and event_window)
+
+    # ── コメント ───────────────────────────────────────
+    parts = []
+    if earn_risk in ("imminent", "high"):
+        parts.append(f"決算が{days_to_earn}日後に迫っており、エントリーには慎重な判断が必要")
+    if macro_risk_level in ("high", "medium"):
+        parts.append(f"{nearest_macro_name}など主要マクロイベントが近い")
+    if sec_level in ("very_high", "high"):
+        parts.append("セクター特性上、イベントで大きく動きやすい")
+    if not parts:
+        parts.append("現時点ではイベントによる抑制要因は少ない")
+    comment = "。".join(parts) + "。"
+
+    return {
+        "event_risk_score":            score,
+        "event_risk_status":           status,
+        "summary_label_ja":            status_ja,
+        "days_to_earnings":            days_to_earn,
+        "earnings_date":               str(earnings_date) if earnings_date else None,
+        "earnings_risk_level":         earn_risk,
+        "earnings_risk_label_ja":      earn_risk_ja,
+        "avg_earnings_move_pct":       er_data.get("avg_earnings_move_pct"),
+        "days_to_ex_dividend":         days_to_div,
+        "macro_event_risk_level":      macro_risk_level,
+        "macro_event_risk_label_ja":   macro_risk_ja,
+        "nearest_macro_name":          nearest_macro_name,
+        "nearest_macro_days":          nearest_macro_days if nearest_macro_days < 999 else None,
+        "sector_event_sensitivity":    sec_level,
+        "sector_event_sensitivity_label_ja": sec_label_ja,
+        "event_window_flag":           event_window,
+        "high_volatility_window":      high_vol_window,
+        "wait_for_event_passage":      wait_flag,
+        "quality_flags":               quality_flags,
+        "risk_flags":                  risk_flags,
+        "comment":                     comment,
+        "beta":                        beta,
+    }
+
+
 def create_recommendation_pie_chart(recs_summary: pd.DataFrame):
     """アナリストの推奨レーティング構成をパイチャートで表示。"""
     if recs_summary is None or recs_summary.empty:
@@ -4085,8 +4389,8 @@ def render_stock_analyzer():
             st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
             
             # ─── タブ切り替え ───
-            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_sd, tab_val, tab_risk, tab_ai, tab_cio = st.tabs(
-                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "⚖️ 需給分析", "📏 バリュエーション帯", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
+            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_sd, tab_val, tab_event, tab_risk, tab_ai, tab_cio = st.tabs(
+                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "⚖️ 需給分析", "📏 バリュエーション帯", "📅 イベントリスク", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
             )
 
             # 1. 基本情報
@@ -5450,6 +5754,168 @@ def render_stock_analyzer():
                 with col_vbrf:
                     st.markdown("#### ⚠️ 割高・懸念ポイント")
                     for f in vb.get("risk_flags", []) or ["特になし"]: st.markdown(f"- {f}")
+
+            # 📅 イベントリスク判定タブ
+            with tab_event:
+                st.divider()
+                st.markdown('<div class="section-title">📅 イベントリスク判定 (Event Risk)</div>', unsafe_allow_html=True)
+                st.caption("激算接近・マクロイベント・セクター特性の3軸から「今購入すべきタイミングか」を判定します。")
+
+                with st.spinner("イベントリスクデータを解析中..."):
+                    er_raw  = fetch_event_risk_data(ticker)
+                    er      = calculate_event_risk(er_raw)
+
+                er_score  = er.get("event_risk_score", 0)
+                er_status = er.get("event_risk_status", "low")
+                er_label  = er.get("summary_label_ja", "—")
+                er_comment= er.get("comment", "")
+                wait_flag = er.get("wait_for_event_passage", False)
+
+                status_cfg_er = {
+                    "high":   ("🚨 高リスク",    "#ef4444", "rgba(239,68,68,0.15)"),
+                    "medium": ("⚠️ 中リスク",  "#f59e0b", "rgba(245,158,11,0.15)"),
+                    "low":    ("✅ 低リスク",    "#10b981", "rgba(16,185,129,0.15)"),
+                }
+                er_icon, er_color, er_bg = status_cfg_er.get(er_status, status_cfg_er["medium"])
+
+                # ── イベント通過待ちバナー ─────────────────────────────
+                if wait_flag:
+                    st.markdown(
+                        '<div style="background:rgba(239,68,68,0.12); border:1px solid #ef4444; '
+                        'border-radius:10px; padding:14px 18px; margin-bottom:12px;">'
+                        '🛑 <b>イベント通過を待つことを推奨</b> — '
+                        '銀柄自体の魅力とは別に、短期的にはイベント通過待ちの方が合理的な局面です。'
+                        '</div>',
+                        unsafe_allow_html=True
+                    )
+
+                # ── スコアゲージ & 総合ステータス ────────────────────
+                col_er1, col_er2 = st.columns([1, 2])
+                with col_er1:
+                    fig_er_gauge = go.Figure(go.Pie(
+                        values=[er_score, 100 - er_score],
+                        hole=0.72,
+                        marker_colors=[er_color, "rgba(255,255,255,0.05)"],
+                        textinfo="none", sort=False,
+                    ))
+                    fig_er_gauge.add_annotation(
+                        text=f"<b>{er_score}</b>",
+                        x=0.5, y=0.55, font=dict(size=36, color=er_color), showarrow=False
+                    )
+                    fig_er_gauge.add_annotation(
+                        text="Event Risk", x=0.5, y=0.38,
+                        font=dict(size=11, color="#94a3b8"), showarrow=False
+                    )
+                    fig_er_gauge.update_layout(
+                        **{**PLOTLY_LAYOUT, "margin": dict(l=0, r=0, t=10, b=0)},
+                        showlegend=False, height=220,
+                    )
+                    st.plotly_chart(fig_er_gauge, use_container_width=True)
+
+                with col_er2:
+                    st.markdown(
+                        f'<div style="background:{er_bg}; border-left:6px solid {er_color}; '
+                        f'border-radius:12px; padding:18px 20px;">'
+                        f'<div style="font-size:0.8rem; color:#94a3b8;">イベントリスク総合判定</div>'
+                        f'<div style="font-size:1.5rem; font-weight:900; color:{er_color};">'
+                        f'{er_icon} {er_label}</div></div>',
+                        unsafe_allow_html=True
+                    )
+                    st.markdown(f'<div class="ai-report" style="margin-top:10px;">{er_comment}</div>',
+                                unsafe_allow_html=True)
+
+                # ── 3軸詳細カード ─────────────────────────────────────
+                st.divider()
+                st.markdown("#### 📌 リスク要因3軸")
+                ec1, ec2, ec3 = st.columns(3)
+
+                # 軸1: 激算リスク
+                with ec1:
+                    d2e    = er.get("days_to_earnings")
+                    el     = er.get("earnings_risk_level", "unknown")
+                    el_col = {"imminent": "#ef4444", "high": "#ef4444", "medium": "#f59e0b",
+                              "low": "#f59e0b", "safe": "#10b981", "passed": "#10b981",
+                              "unknown": "#94a3b8"}.get(el, "#94a3b8")
+                    st.markdown(
+                        f'<div style="background:rgba(255,255,255,0.04); border-radius:10px; padding:14px;">'
+                        f'<div style="font-size:0.8rem; color:#94a3b8;">📄 激算リスク</div>'
+                        f'<div style="font-size:1.0rem; font-weight:700; color:{el_col}; margin-top:4px;">'
+                        f'{er.get("earnings_risk_label_ja", "—")}</div>'
+                        f'<div style="font-size:0.8rem; color:#64748b; margin-top:4px;">'
+                        f'決算日: {er.get("earnings_date", "不明")} | 退け: '
+                        f'{"{:.1f}%".format(er.get("avg_earnings_move_pct")) if er.get("avg_earnings_move_pct") else "—"}'
+                        f'</div></div>',
+                        unsafe_allow_html=True
+                    )
+
+                # 軸2: マクロリスク
+                with ec2:
+                    ml     = er.get("macro_event_risk_level", "low")
+                    ml_col = {"high": "#ef4444", "medium": "#f59e0b",
+                              "low_medium": "#f59e0b", "low": "#10b981"}.get(ml, "#94a3b8")
+                    nm     = er.get("nearest_macro_name", "")
+                    nd     = er.get("nearest_macro_days")
+                    st.markdown(
+                        f'<div style="background:rgba(255,255,255,0.04); border-radius:10px; padding:14px;">'
+                        f'<div style="font-size:0.8rem; color:#94a3b8;">🌐 マクロイベント</div>'
+                        f'<div style="font-size:1.0rem; font-weight:700; color:{ml_col}; margin-top:4px;">'
+                        f'{er.get("macro_event_risk_label_ja", "—")}</div>'
+                        f'<div style="font-size:0.8rem; color:#64748b; margin-top:4px;">'
+                        f'{nm + " まで " + str(nd) + "日" if nm and nd is not None else "直近2週間に主要イベントなし"}'
+                        f'</div></div>',
+                        unsafe_allow_html=True
+                    )
+
+                # 軸3: セクター感応度
+                with ec3:
+                    sl     = er.get("sector_event_sensitivity", "medium")
+                    sl_col = {"very_high": "#ef4444", "high": "#f59e0b",
+                              "medium": "#3b82f6", "low": "#10b981"}.get(sl, "#94a3b8")
+                    sl_lv  = {"very_high": "🚨 極高", "high": "🔵 高", "medium": "🟡 中", "low": "🟢 低"}.get(sl, "—")
+                    st.markdown(
+                        f'<div style="background:rgba(255,255,255,0.04); border-radius:10px; padding:14px;">'
+                        f'<div style="font-size:0.8rem; color:#94a3b8;">🏭 セクター感応度</div>'
+                        f'<div style="font-size:1.0rem; font-weight:700; color:{sl_col}; margin-top:4px;">{sl_lv}</div>'
+                        f'<div style="font-size:0.75rem; color:#64748b; margin-top:4px;">'
+                        f'{er.get("sector_event_sensitivity_label_ja", "—")}'
+                        f'</div></div>',
+                        unsafe_allow_html=True
+                    )
+
+                # ── マクロイベントカレンダービュー ────────────────────────────
+                st.divider()
+                import datetime as _dt_ui
+                today_ui = _dt_ui.date.today()
+                st.markdown("#### 🗓️ マクロイベントカレンダー（直近90日分）")
+                cal_rows = []
+                for ev in _MACRO_EVENT_CALENDAR:
+                    try:
+                        ev_date = _dt_ui.date.fromisoformat(ev["date"])
+                        diff = (ev_date - today_ui).days
+                        if -7 <= diff <= 90:
+                            urgency = "🚨" if diff <= 3 else ("⚠️" if diff <= 7 else "📌")
+                            cal_rows.append({
+                                "イベント": f"{urgency} {ev['name']}",
+                                "日付":   str(ev_date),
+                                "までの日数": f"{diff}日" if diff >= 0 else f"通過済({abs(diff)}日前)",
+                                "種別":   ev.get("type", "—").upper(),
+                            })
+                    except Exception:
+                        pass
+                if cal_rows:
+                    st.dataframe(cal_rows, use_container_width=True)
+                else:
+                    st.caption("直近90日内に登録されたマクロイベントはありません。")
+
+                # ── 安心材料 / 警戛材料 ─────────────────────────────
+                st.divider()
+                col_erqf, col_errf = st.columns(2)
+                with col_erqf:
+                    st.markdown("#### ✅ リスク抱減要因")
+                    for f in er.get("quality_flags", []) or ["特になし"]: st.markdown(f"- {f}")
+                with col_errf:
+                    st.markdown("#### ⚠️ 警戛要因")
+                    for f in er.get("risk_flags", []) or ["特になし"]: st.markdown(f"- {f}")
 
             # 7. リスク・予想
             with tab_risk:
