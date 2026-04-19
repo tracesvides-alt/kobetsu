@@ -3648,6 +3648,133 @@ def calculate_event_risk(er_data: dict) -> dict:
 # ─────────────────────────────────────────────
 
 @st.cache_data(ttl=1800)
+def calculate_scenario_expected_value(ticker: str, data: dict, cio_inputs: dict) -> dict:
+    """
+    Bull / Base / Bear の3シナリオから期待値（Expected Value）とリスクリワード（RR）を算出する。
+    """
+    price = data.get("price")
+    base_eps = data.get("eps_trailing")
+    
+    if not price or base_eps is None or base_eps <= 0:
+        return {
+            "expected_value_score": 0, 
+            "expected_value_status": "error", 
+            "summary_label_ja": "データ不足またはEPSマイナス"
+        }
+        
+    scores = cio_inputs.get("scores", {})
+    trend = scores.get("trend_score", 50)
+    
+    # 成長率とPERの推定（未取得なら一定のデフォルトを置く）
+    base_g = data.get("eps_growth") if data.get("eps_growth") is not None else data.get("revenue_growth")
+    if base_g is None: 
+        base_g = 0.08
+    base_g = max(0.02, min(0.40, base_g)) # 2%〜40%でクランプ
+    
+    base_pe = data.get("pe_ratio")
+    if base_pe is None or base_pe <= 0: 
+        base_pe = 20
+    base_pe = max(10.0, min(60.0, float(base_pe))) # 10〜60でクランプ
+    
+    # 割引率
+    beta = data.get("beta", 1.0)
+    if beta is None: beta = 1.0
+    discount_rate = 0.05 + (beta * 0.05)
+    
+    # ── シナリオ設定 ──
+    horizon = 5 # 5年後の収束先を見る（10年より実務的に近い）
+    
+    # Base Case
+    base_prob = 0.50
+    base_val = calculate_earnings_valuation(base_eps, base_g, horizon, base_pe, discount_rate)
+    base_target = base_val["total_value"] if base_val else price
+    
+    # Bull Case (トレンドが良ければ確率を高める)
+    bull_prob = 0.35 if trend >= 65 else (0.20 if trend <= 40 else 0.30)
+    bull_g = min(0.50, base_g * 1.4)
+    bull_pe = min(80.0, base_pe * 1.3)
+    bull_val = calculate_earnings_valuation(base_eps, bull_g, horizon, bull_pe, discount_rate)
+    bull_target = bull_val["total_value"] if bull_val else price * 1.2
+    
+    # Bear Case
+    bear_prob = round(1.0 - base_prob - bull_prob, 2)
+    bear_g = max(0.01, base_g * 0.5)
+    bear_pe = max(8.0, base_pe * 0.6)
+    bear_val = calculate_earnings_valuation(base_eps, bear_g, horizon, bear_pe, discount_rate)
+    bear_target = bear_val["total_value"] if bear_val else price * 0.7
+    
+    # 余地計算
+    bull_upside = (bull_target - price) / price * 100
+    base_upside = (base_target - price) / price * 100
+    bear_downside = (bear_target - price) / price * 100
+    
+    # 期待値 (EV)
+    ev = (bull_target * bull_prob) + (base_target * base_prob) + (bear_target * bear_prob)
+    ev_pct = (ev - price) / price * 100
+    
+    # リスクリワード比 (RR)
+    risk = price - bear_target
+    reward = bull_target - price
+    if risk > 0:
+        rr_ratio = reward / risk
+    else:
+        rr_ratio = 9.99 # 理論上、下値リスクがない（現在価格よりBearが高い）
+        
+    # スコア計算 (0-100)
+    # 期待値 +20% で 80点, +0% で 50点, -20% で 20点
+    ev_score = min(100, max(0, int(50 + (ev_pct * 1.5))))
+    
+    # フラグやラベル
+    if ev_pct >= 10.0 and rr_ratio >= 1.5:
+        status = "attractive"
+        label = "🟢 期待値・RRともに魅力的"
+    elif ev_pct > 0.0 or rr_ratio >= 1.0:
+        status = "neutral"
+        label = "🟡 期待値プラス (Upside 優位)"
+    else:
+        status = "unattractive"
+        label = "🔴 期待値マイナス (Downside 警戒)"
+        
+    quality_flags = []
+    risk_flags = []
+    
+    if base_upside > 0:
+        quality_flags.append(f"ベースケースでも {base_upside:.1f}% の上昇余地あり")
+    else:
+        risk_flags.append(f"現在価格はベースターゲット(${base_target:.2f})を既に上回る")
+        
+    if rr_ratio >= 2.0:
+        quality_flags.append(f"リスクリワード比が {rr_ratio:.1f}x と非対称に上値有利")
+    elif rr_ratio < 1.0:
+        risk_flags.append(f"リスクリワード比が {rr_ratio:.2f}x と下値余地の方が大きい")
+        
+    if ev_pct > 10:
+        quality_flags.append(f"シナリオ加重期待値が +{ev_pct:.1f}% でポジティブ")
+    elif ev_pct < 0:
+        risk_flags.append(f"シナリオ加重期待値が {ev_pct:.1f}% でマイナス")
+        
+    return {
+        "expected_value_score": ev_score,
+        "expected_value_status": status,
+        "summary_label_ja": label,
+        "current_price": price,
+        "bull_target_price": bull_target,
+        "base_target_price": base_target,
+        "bear_target_price": bear_target,
+        "bull_upside_pct": bull_upside,
+        "base_upside_pct": base_upside,
+        "bear_downside_pct": bear_downside,
+        "bull_probability": bull_prob,
+        "base_probability": base_prob,
+        "bear_probability": bear_prob,
+        "expected_value_pct": ev_pct,
+        "risk_reward_ratio": rr_ratio,
+        "quality_flags": quality_flags,
+        "risk_flags": risk_flags,
+        "comment": f"シナリオ加重期待値は {ev_pct:+.1f}% で、{label} な水準です。"
+    }
+
+@st.cache_data(ttl=1800)
 def build_cio_decision_inputs(ticker: str) -> dict:
     """
     7軸スコア統合エンジン。
@@ -4712,8 +4839,8 @@ def render_stock_analyzer():
             st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
             
             # ─── タブ切り替え ───
-            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_sd, tab_val, tab_event, tab_risk, tab_cio, tab_ai_final = st.tabs(
-                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "⚖️ 需給分析", "📏 バリュエーション帯", "📅 イベントリスク", "🛡️ リスク/予想", "🎯 CIO判断", "✅ AIジャッジ"]
+            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_sd, tab_val, tab_scenario, tab_event, tab_risk, tab_cio, tab_ai_final = st.tabs(
+                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "⚖️ 需給分析", "📏 バリュエーション帯", "🎲 シナリオ分析", "📅 イベントリスク", "🛡️ リスク/予想", "🎯 CIO判断", "✅ AIジャッジ"]
             )
 
             # 1. 基本情報
@@ -6289,6 +6416,93 @@ def render_stock_analyzer():
                     else:
                         st.info("直近のインサイダー取引データがありません。")
     
+
+            # 8. シナリオ別期待値分析
+            with tab_scenario:
+                st.divider()
+                st.markdown('<div class="section-title">🎲 シナリオ別期待値分析 (Expected Value / Risk-Reward)</div>', unsafe_allow_html=True)
+                st.caption("強気・中立・弱気のシナリオ別に目標価格を算出し、現在価格からの「期待値（Expected Value）」と「リスクリワード比」を評価します。")
+                
+                with st.spinner("シナリオ期待値を計算中..."):
+                    cio_base_inputs = build_cio_decision_inputs(ticker)
+                    scenario_res = calculate_scenario_expected_value(ticker, data, cio_base_inputs)
+                
+                if scenario_res.get("expected_value_status") == "error":
+                    st.warning("⚠️ EPSがマイナスか、十分な財務データが得られなかったため、シナリオ分析を計算できませんでした。")
+                else:
+                    curr_p = scenario_res["current_price"]
+                    status = scenario_res["expected_value_status"]
+                    summary_ja = scenario_res["summary_label_ja"]
+                    ev_pct = scenario_res["expected_value_pct"]
+                    rr = scenario_res["risk_reward_ratio"]
+                    ev_score = scenario_res["expected_value_score"]
+                    
+                    # ステータスバナー
+                    bg_color = {
+                        "attractive": "rgba(16,185,129,0.15)",
+                        "neutral": "rgba(245,158,11,0.15)",
+                        "unattractive": "rgba(239,68,68,0.15)"
+                    }.get(status, "rgba(255,255,255,0.05)")
+                    
+                    border_c = {
+                        "attractive": "#10b981",
+                        "neutral": "#f59e0b",
+                        "unattractive": "#ef4444"
+                    }.get(status, "#64748b")
+                    
+                    st.markdown(f"""
+                    <div style="background:{bg_color}; border-left:6px solid {border_c}; padding:16px; border-radius:8px; margin-bottom:20px;">
+                        <h3 style="margin:0; color:{border_c};">{summary_ja}</h3>
+                        <div style="display:flex; gap:20px; margin-top:10px;">
+                            <div style="font-size:1.1rem;">期待値 (EV) : <strong style="color:{"#10b981" if ev_pct>0 else "#ef4444"}">{ev_pct:+.1f}%</strong></div>
+                            <div style="font-size:1.1rem;">リスクリワード比 : <strong>{rr:.2f}x</strong></div>
+                            <div style="font-size:1.1rem;">評価スコア : <strong>{ev_score}/100</strong></div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # 3シナリオのカード
+                    col_bull, col_base, col_bear = st.columns(3)
+                    
+                    with col_bull:
+                        st.markdown("#### 🌟 Bull Case (強気)")
+                        st.caption(f"発生確率: {scenario_res['bull_probability']*100:.0f}%")
+                        up_pct = scenario_res['bull_upside_pct']
+                        st.metric("目標株価", f"${scenario_res['bull_target_price']:,.2f}", f"{up_pct:+.1f}%", delta_color="normal")
+                        st.caption("好決算継続、成長率上振れ、高PER維持のケース")
+                        
+                    with col_base:
+                        st.markdown("#### 🟰 Base Case (中立)")
+                        st.caption(f"発生確率: {scenario_res['base_probability']*100:.0f}%")
+                        bsc_pct = scenario_res['base_upside_pct']
+                        col_normal = "normal" if bsc_pct >= 0 else "inverse"
+                        st.metric("妥当株価", f"${scenario_res['base_target_price']:,.2f}", f"{bsc_pct:+.1f}%", delta_color=col_normal)
+                        st.caption("現状の成長予想延長、妥当PERへ回帰のケース")
+                        
+                    with col_bear:
+                        st.markdown("#### 📉 Bear Case (弱気)")
+                        st.caption(f"発生確率: {scenario_res['bear_probability']*100:.0f}%")
+                        dn_pct = scenario_res['bear_downside_pct']
+                        st.metric("下値メド", f"${scenario_res['bear_target_price']:,.2f}", f"{dn_pct:+.1f}%", delta_color="inverse")
+                        st.caption("成長鈍化、PER縮小、市場の期待低下のケース")
+                        
+                    st.divider()
+                    col_flag_pos, col_flag_neg = st.columns(2)
+                    with col_flag_pos:
+                        st.markdown("##### ✅ アピールポイント")
+                        if not scenario_res["quality_flags"]:
+                            st.write("該当なし")
+                        for f in scenario_res["quality_flags"]:
+                            st.markdown(f"- {f}")
+                    
+                    with col_flag_neg:
+                        st.markdown("##### ⚠️ 警戒ポイント")
+                        if not scenario_res["risk_flags"]:
+                            st.write("該当なし")
+                        for f in scenario_res["risk_flags"]:
+                            st.markdown(f"- {f}")
+                            
+                    st.caption(scenario_res["comment"])
 
     
             # 9. CIO 総合投資判断ダッシュボード（7軸統合）
