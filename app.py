@@ -2340,6 +2340,346 @@ def evaluate_entry_timing(ticker: str, weekly_stage: dict) -> dict:
     }
 
 
+
+# ─────────────────────────────────────────────
+# 決算品質分析 (Earnings Quality Analysis)
+# ─────────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def fetch_earnings_quality_data(ticker: str) -> dict | None:
+    """決算品質分析に必要な四半期財務・株価データを収集して返す。"""
+    try:
+        stock = yf.Ticker(ticker)
+
+        # ── 四半期財務（損益計算書 + CF）──────────────
+        q_inc = stock.quarterly_financials
+        q_cf  = stock.quarterly_cashflow
+        q_bs  = stock.quarterly_balance_sheet
+
+        if q_inc is None or q_inc.empty:
+            return None
+
+        q_inc = q_inc.T.sort_index()
+        q_cf  = q_cf.T.sort_index()  if (q_cf  is not None and not q_cf.empty)  else pd.DataFrame()
+        q_bs  = q_bs.T.sort_index()  if (q_bs  is not None and not q_bs.empty)  else pd.DataFrame()
+
+        def _pick(df: pd.DataFrame, candidates: list[str]) -> pd.Series | None:
+            for c in candidates:
+                if c in df.columns:
+                    return pd.to_numeric(df[c], errors="coerce")
+            return None
+
+        rev  = _pick(q_inc, ["Total Revenue", "TotalRevenue", "Operating Revenue"])
+        ni   = _pick(q_inc, ["Net Income", "NetIncome", "Net Income Common Stockholders"])
+        op   = _pick(q_inc, ["Operating Income", "OperatingIncome", "EBIT"])
+        ocf  = _pick(q_cf,  ["Operating Cash Flow", "OperatingCashFlow",
+                               "Total Cash From Operating Activities"])
+        capex= _pick(q_cf,  ["Capital Expenditure", "CapitalExpenditure",
+                               "Capital Expenditures"])
+
+        # FCF = OCF - CapEx (CapExはマイナス値で格納されることが多い)
+        fcf_series = None
+        if ocf is not None and capex is not None:
+            capex_abs = capex.abs()
+            fcf_series = ocf - capex_abs
+
+        # ── 決算日リスト ────────────────────────────────
+        eq_dates = []
+        try:
+            cal = stock.calendar
+            if cal is not None and not cal.empty:
+                # yfinance の calendar はバージョンで形式が違う
+                for col in ["Earnings Date", "earningsDate"]:
+                    if col in cal.index:
+                        dt = cal.loc[col].values[0]
+                        if hasattr(dt, "date"):
+                            eq_dates.append(dt.date())
+        except Exception:
+            pass
+
+        # earnings_dates が取れなければ quarterly_financials の列日付を利用
+        if not eq_dates:
+            eq_dates = [d.date() for d in q_inc.index[-4:]]
+
+        # ── 日足価格（1.5年分）──────────────────────────
+        hist = stock.history(period="18mo", interval="1d")
+        hist = hist[["Open", "High", "Low", "Close", "Volume"]].dropna() if not hist.empty else pd.DataFrame()
+
+        return {
+            "ticker": ticker,
+            "rev":    rev,
+            "ni":     ni,
+            "op":     op,
+            "ocf":    ocf,
+            "capex":  capex,
+            "fcf":    fcf_series,
+            "q_dates": list(q_inc.index),
+            "eq_dates": eq_dates,
+            "hist":   hist,
+        }
+    except Exception as e:
+        print(f"EQ FETCH ERROR: {e}")
+        return None
+
+
+def _growth(series: pd.Series, lag: int = 4) -> float | None:
+    """lag 期前比の成長率(%)を返す。YoY=4, QoQ=1。"""
+    if series is None or len(series) < lag + 1:
+        return None
+    old = series.iloc[-(lag + 1)]
+    new = series.iloc[-1]
+    if pd.isna(old) or pd.isna(new) or old == 0:
+        return None
+    return (new / old - 1) * 100
+
+
+def _margin(rev: pd.Series | None, profit: pd.Series | None) -> float | None:
+    """最新四半期の利益率(%)を返す。"""
+    if rev is None or profit is None:
+        return None
+    r = rev.iloc[-1]; p = profit.iloc[-1]
+    if pd.isna(r) or pd.isna(p) or r == 0:
+        return None
+    return (p / r) * 100
+
+
+def _post_earnings_reaction(hist: pd.DataFrame, eq_date) -> dict:
+    """決算日の翌営業日からの価格反応を計算する。"""
+    empty = {"ret_1d": None, "ret_5d": None, "vol_ratio": None}
+    if hist.empty or eq_date is None:
+        return empty
+    try:
+        import datetime
+        if isinstance(eq_date, datetime.datetime):
+            eq_date = eq_date.date()
+        idx = hist.index
+        idx_dates = [d.date() if hasattr(d, "date") else d for d in idx]
+
+        # 決算日以降の最初の取引日
+        after = [i for i, d in enumerate(idx_dates) if d > eq_date]
+        if not after:
+            return empty
+
+        i0 = after[0]
+        p0 = hist["Close"].iloc[i0 - 1] if i0 > 0 else hist["Close"].iloc[i0]  # 直前終値
+        p1 = hist["Close"].iloc[i0]       # 翌日終値
+        p5 = hist["Close"].iloc[min(i0 + 4, len(hist) - 1)]  # 5日後終値
+
+        ret_1d = (p1 / p0 - 1) * 100 if p0 != 0 else None
+        ret_5d = (p5 / p0 - 1) * 100 if p0 != 0 else None
+
+        vol_avg = hist["Volume"].iloc[max(0, i0 - 20):i0].mean()
+        vol_day = hist["Volume"].iloc[i0]
+        vol_ratio = vol_day / vol_avg if vol_avg > 0 else None
+
+        return {"ret_1d": ret_1d, "ret_5d": ret_5d, "vol_ratio": vol_ratio}
+    except Exception as e:
+        print(f"POST EARNINGS ERR: {e}")
+        return empty
+
+
+def calculate_earnings_quality(eq_data: dict) -> dict:
+    """四半期財務データを評価し earnings_quality_score と各指標を返す。"""
+    fallback = {
+        "earnings_quality_score": 0,
+        "earnings_quality_status": "neutral",
+        "summary_label_ja": "データ不足",
+        "revenue_growth_pct": None, "net_income_growth_pct": None,
+        "operating_cf_growth_pct": None, "margin_trend": "unknown",
+        "margin_trend_label_ja": "判定不能", "fcf_trend": "unknown",
+        "post_earnings_1d_return_pct": None, "post_earnings_5d_return_pct": None,
+        "post_earnings_volume_ratio": None, "earnings_reaction": "unknown",
+        "quality_flags": [], "risk_flags": [],
+        "comment": "データが取得できませんでした。",
+    }
+    if not eq_data:
+        return fallback
+
+    rev   = eq_data.get("rev")
+    ni    = eq_data.get("ni")
+    op    = eq_data.get("op")
+    ocf   = eq_data.get("ocf")
+    fcf   = eq_data.get("fcf")
+    hist  = eq_data.get("hist", pd.DataFrame())
+    eq_dates = eq_data.get("eq_dates", [])
+
+    # ── 成長率計算（YoY: lag=4） ────────────────────────
+    rev_g  = _growth(rev,  4)
+    ni_g   = _growth(ni,   4)
+    ocf_g  = _growth(ocf,  4)
+    fcf_g  = _growth(fcf,  4)
+
+    # ── 利益率トレンド（直近2四半期で比較） ─────────────
+    margin_now  = _margin(rev, ni)
+    margin_prev = None
+    if rev is not None and ni is not None and len(rev) >= 5 and len(ni) >= 5:
+        rev_prev = rev.iloc[:-1]
+        ni_prev  = ni.iloc[:-1]
+        margin_prev = _margin(rev_prev, ni_prev)
+
+    if margin_now is not None and margin_prev is not None:
+        margin_delta = margin_now - margin_prev
+        if margin_delta > 0.5:
+            margin_trend    = "improving"
+            margin_trend_ja = f"利益率改善 ({margin_delta:+.1f}pp)"
+        elif margin_delta < -0.5:
+            margin_trend    = "deteriorating"
+            margin_trend_ja = f"利益率悪化 ({margin_delta:+.1f}pp)"
+        else:
+            margin_trend    = "stable"
+            margin_trend_ja = "利益率横ばい"
+    else:
+        margin_trend    = "unknown"
+        margin_trend_ja = "判定不能"
+
+    # ── FCFトレンド ────────────────────────────────────
+    if fcf_g is not None:
+        fcf_trend = "improving" if fcf_g > 5 else ("deteriorating" if fcf_g < -5 else "stable")
+    else:
+        fcf_trend = "unknown"
+
+    # ── 決算後株価反応（直近決算日を使用）────────────────
+    latest_eq_date = eq_dates[-1] if eq_dates else None
+    reaction = _post_earnings_reaction(hist, latest_eq_date)
+    ret_1d  = reaction["ret_1d"]
+    ret_5d  = reaction["ret_5d"]
+    vol_r   = reaction["vol_ratio"]
+
+    if ret_1d is not None:
+        if ret_1d >= 3:
+            er = "strongly_positive"
+        elif ret_1d >= 0.5:
+            er = "positive"
+        elif ret_1d <= -3:
+            er = "strongly_negative"
+        elif ret_1d <= -0.5:
+            er = "negative"
+        else:
+            er = "neutral"
+    else:
+        er = "unknown"
+
+    # ── スコアリング（0〜100、ベース50） ─────────────────
+    score = 50
+    quality_flags: list[str] = []
+    risk_flags:    list[str] = []
+
+    # 売上成長
+    if rev_g is not None:
+        if rev_g >= 20:   score += 12; quality_flags.append(f"売上高成長 +{rev_g:.1f}% (YoY)")
+        elif rev_g >= 10: score +=  7; quality_flags.append(f"売上高成長 +{rev_g:.1f}% (YoY)")
+        elif rev_g >= 0:  score +=  2
+        else:             score -= 10; risk_flags.append(f"売上高が前年同期比で減少 ({rev_g:.1f}%)")
+
+    # 純利益成長
+    if ni_g is not None:
+        if ni_g >= 25:    score += 12; quality_flags.append(f"純利益成長 +{ni_g:.1f}% (YoY)")
+        elif ni_g >= 10:  score +=  7; quality_flags.append(f"純利益成長 +{ni_g:.1f}% (YoY)")
+        elif ni_g >= 0:   score +=  2
+        else:             score -=  8; risk_flags.append(f"純利益が前年同期比で減少 ({ni_g:.1f}%)")
+    # 赤字→黒字ボーナス
+    if ni is not None and len(ni) >= 5:
+        if ni.iloc[-5] < 0 < ni.iloc[-1]:
+            score += 8; quality_flags.append("赤字→黒字転換を達成")
+
+    # 営業CF
+    if ocf_g is not None:
+        if ocf_g >= 15:   score +=  8; quality_flags.append(f"営業CF改善 +{ocf_g:.1f}% (YoY)")
+        elif ocf_g >= 0:  score +=  3
+        else:             score -=  5; risk_flags.append(f"営業CFが前年同期比で悪化 ({ocf_g:.1f}%)")
+
+    # 利益率トレンド
+    if margin_trend == "improving":
+        score +=  8; quality_flags.append(margin_trend_ja)
+    elif margin_trend == "deteriorating":
+        score -=  8; risk_flags.append(margin_trend_ja)
+
+    # FCF
+    if fcf_trend == "improving":
+        score +=  5; quality_flags.append("FCF改善トレンド")
+    elif fcf_trend == "deteriorating":
+        score -=  4; risk_flags.append("FCF悪化傾向")
+    elif fcf_trend == "unknown":
+        risk_flags.append("FCFデータが取得できません")
+
+    # 成長の質チェック（売上↑でも利益↓は減点）
+    if rev_g is not None and ni_g is not None:
+        if rev_g > 10 and ni_g < 0:
+            score -= 6; risk_flags.append("売上は伸びているが利益が減少（利益率悪化懸念）")
+        elif rev_g > 5 and ni_g > rev_g:
+            score += 4; quality_flags.append("利益成長が売上成長を上回る（レバレッジ効果）")
+
+    # 決算後市場反応
+    if er == "strongly_positive":
+        score += 10; quality_flags.append(f"決算翌日に強い上昇 +{ret_1d:.1f}%（市場が好感）")
+    elif er == "positive":
+        score +=  5; quality_flags.append(f"決算翌日に上昇 +{ret_1d:.1f}%")
+    elif er == "strongly_negative":
+        score -= 12; risk_flags.append(f"決算翌日に大幅下落 {ret_1d:.1f}%（市場が失望）")
+    elif er == "negative":
+        score -=  5; risk_flags.append(f"決算翌日に下落 {ret_1d:.1f}%")
+
+    # 決算後5日
+    if ret_5d is not None:
+        if ret_5d >= 5:   score +=  5; quality_flags.append(f"決算後5日でも上昇継続 +{ret_5d:.1f}%")
+        elif ret_5d < -5: score -=  5; risk_flags.append(f"決算後5日間でも下落 {ret_5d:.1f}%")
+
+    # 出来高反応
+    if vol_r is not None:
+        if vol_r >= 2.0:  quality_flags.append(f"決算翌日の出来高が平均の {vol_r:.1f}倍（強い資金流入）")
+        elif vol_r < 0.8: risk_flags.append("決算翌日の出来高が少ない（関心薄）")
+
+    score = max(0, min(100, score))
+
+    # ── ステータス判定 ─────────────────────────────────
+    if score >= 70:
+        status = "strong";  status_ja = "決算品質は高い"
+    elif score >= 45:
+        status = "neutral"; status_ja = "決算品質は平均的"
+    else:
+        status = "weak";    status_ja = "決算品質に懸念あり"
+
+    # ── コメント生成 ────────────────────────────────────
+    parts = []
+    if rev_g is not None and rev_g > 10:
+        parts.append(f"売上+{rev_g:.1f}%と力強い成長")
+    if ni_g is not None and ni_g > 10:
+        parts.append(f"純利益+{ni_g:.1f}%で利益も拡大")
+    if margin_trend == "improving":
+        parts.append("利益率も改善傾向")
+    if er in ("positive", "strongly_positive"):
+        parts.append("市場の受け止めも良好")
+    if er in ("negative", "strongly_negative"):
+        parts.append("ただし市場反応はネガティブで慎重評価が必要")
+    comment = "。".join(parts) + "。" if parts else "詳細な評価には追加のデータが必要です。"
+
+    return {
+        "earnings_quality_score":     score,
+        "earnings_quality_status":    status,
+        "summary_label_ja":           status_ja,
+        "revenue_growth_pct":         rev_g,
+        "net_income_growth_pct":      ni_g,
+        "operating_cf_growth_pct":    ocf_g,
+        "fcf_growth_pct":             fcf_g,
+        "margin_trend":               margin_trend,
+        "margin_trend_label_ja":      margin_trend_ja,
+        "margin_latest_pct":          margin_now,
+        "fcf_trend":                  fcf_trend,
+        "post_earnings_1d_return_pct": ret_1d,
+        "post_earnings_5d_return_pct": ret_5d,
+        "post_earnings_volume_ratio":  vol_r,
+        "earnings_reaction":           er,
+        "quality_flags":               quality_flags,
+        "risk_flags":                  risk_flags,
+        "comment":                     comment,
+        # UI チャート用
+        "_rev":  rev,
+        "_ni":   ni,
+        "_ocf":  ocf,
+        "_q_dates": eq_data.get("q_dates", []),
+    }
+
+
 def create_recommendation_pie_chart(recs_summary: pd.DataFrame):
     """アナリストの推奨レーティング構成をパイチャートで表示。"""
     if recs_summary is None or recs_summary.empty:
@@ -3170,8 +3510,8 @@ def render_stock_analyzer():
             st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
             
             # ─── タブ切り替え ───
-            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_risk, tab_ai, tab_cio = st.tabs(
-                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
+            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_risk, tab_ai, tab_cio = st.tabs(
+                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
             )
 
             # 1. 基本情報
@@ -3971,6 +4311,166 @@ def render_stock_analyzer():
                     st.plotly_chart(fig_ed, use_container_width=True)
                 else:
                     st.info("日足チャートの生成に必要なデータが不足しています。")
+
+            # 🧾 決算品質タブ
+            with tab_earnings:
+                st.divider()
+                st.markdown('<div class="section-title">🧾 決算品質分析 (Earnings Quality)</div>', unsafe_allow_html=True)
+                st.caption("四半期決算の数字の強さ・成長の質・市場反応を多角的に評価します。")
+
+                with st.spinner("四半期財務データを解析中..."):
+                    eq_raw = fetch_earnings_quality_data(ticker)
+                    eq = calculate_earnings_quality(eq_raw)
+
+                eq_score  = eq.get("earnings_quality_score", 0)
+                eq_status = eq.get("earnings_quality_status", "neutral")
+                eq_label  = eq.get("summary_label_ja", "—")
+                eq_comment= eq.get("comment", "")
+
+                status_cfg_eq = {
+                    "strong":  ("💎 高品質",  "#10b981", "rgba(16,185,129,0.15)"),
+                    "neutral": ("⚖️ 平均的",  "#f59e0b", "rgba(245,158,11,0.15)"),
+                    "weak":    ("⚠️ 要注意",  "#ef4444", "rgba(239,68,68,0.15)"),
+                }
+                eq_icon, eq_color, eq_bg = status_cfg_eq.get(eq_status, status_cfg_eq["neutral"])
+
+                # ── スコアゲージ & ステータス ──────────────────────────
+                col_eq1, col_eq2 = st.columns([1, 2])
+
+                with col_eq1:
+                    fig_eq_gauge = go.Figure(go.Pie(
+                        values=[eq_score, 100 - eq_score],
+                        hole=0.72,
+                        marker_colors=[eq_color, "rgba(255,255,255,0.05)"],
+                        textinfo="none", sort=False,
+                    ))
+                    fig_eq_gauge.add_annotation(
+                        text=f"<b>{eq_score}</b>",
+                        x=0.5, y=0.55, font=dict(size=36, color=eq_color), showarrow=False
+                    )
+                    fig_eq_gauge.add_annotation(
+                        text="EQ Score", x=0.5, y=0.38,
+                        font=dict(size=12, color="#94a3b8"), showarrow=False
+                    )
+                    fig_eq_gauge.update_layout(
+                        **{**PLOTLY_LAYOUT, "margin": dict(l=0, r=0, t=10, b=0)},
+                        showlegend=False, height=220,
+                    )
+                    st.plotly_chart(fig_eq_gauge, use_container_width=True)
+
+                with col_eq2:
+                    st.markdown(
+                        f'<div style="background:{eq_bg}; border-left:6px solid {eq_color}; '
+                        f'border-radius:12px; padding:18px 20px;">'
+                        f'<div style="font-size:0.8rem; color:#94a3b8;">総合評価</div>'
+                        f'<div style="font-size:1.5rem; font-weight:900; color:{eq_color};">'
+                        f'{eq_icon} {eq_label}</div></div>',
+                        unsafe_allow_html=True
+                    )
+                    st.markdown(f'<div class="ai-report" style="margin-top:10px;">{eq_comment}</div>',
+                                unsafe_allow_html=True)
+
+                # ── 主要指標メトリクス ─────────────────────────────────
+                st.divider()
+                st.markdown("#### 📊 主要財務指標（YoY 成長率）")
+                mc1, mc2, mc3, mc4 = st.columns(4)
+
+                def _fmt_growth(v, label):
+                    if v is None: return st.metric(label, "—")
+                    color = "normal" if v >= 0 else "inverse"
+                    st.metric(label, f"{v:+.1f}%", delta=f"vs 前年同期", delta_color=color)
+
+                with mc1: _fmt_growth(eq.get("revenue_growth_pct"),      "売上成長率")
+                with mc2: _fmt_growth(eq.get("net_income_growth_pct"),   "純利益成長率")
+                with mc3: _fmt_growth(eq.get("operating_cf_growth_pct"), "営業CF成長率")
+                with mc4:
+                    margin = eq.get("margin_latest_pct")
+                    m_trend = eq.get("margin_trend", "unknown")
+                    m_icon = "↑" if m_trend == "improving" else ("↓" if m_trend == "deteriorating" else "→")
+                    st.metric("純利益率", f"{margin:.1f}%" if margin is not None else "—",
+                              delta=f"{m_icon} {eq.get('margin_trend_label_ja', '')}")
+
+                # ── 決算後市場反応 ─────────────────────────────────────
+                st.divider()
+                st.markdown("#### 📅 決算後の市場反応")
+                mr1, mr2, mr3 = st.columns(3)
+
+                ret_1d = eq.get("post_earnings_1d_return_pct")
+                ret_5d = eq.get("post_earnings_5d_return_pct")
+                vol_ra = eq.get("post_earnings_volume_ratio")
+
+                with mr1:
+                    if ret_1d is not None:
+                        st.metric("翌日騰落率", f"{ret_1d:+.1f}%",
+                                  delta_color="normal" if ret_1d >= 0 else "inverse")
+                    else: st.metric("翌日騰落率", "—")
+
+                with mr2:
+                    if ret_5d is not None:
+                        st.metric("5日後騰落率", f"{ret_5d:+.1f}%",
+                                  delta_color="normal" if ret_5d >= 0 else "inverse")
+                    else: st.metric("5日後騰落率", "—")
+
+                with mr3:
+                    st.metric("翌日出来高倍率", f"{vol_ra:.1f}x" if vol_ra is not None else "—",
+                              help="直近20日の平均出来高との比率")
+
+                # ── 強み / 懸念フラグ ─────────────────────────────────
+                st.divider()
+                col_qf, col_rf = st.columns(2)
+
+                with col_qf:
+                    st.markdown("#### ✅ 強みポイント")
+                    qf = eq.get("quality_flags", [])
+                    if qf:
+                        for f in qf:
+                            st.markdown(f"- {f}")
+                    else:
+                        st.caption("強みフラグなし")
+
+                with col_rf:
+                    st.markdown("#### ⚠️ 懸念ポイント")
+                    rf = eq.get("risk_flags", [])
+                    if rf:
+                        for f in rf:
+                            st.markdown(f"- {f}")
+                    else:
+                        st.caption("懸念フラグなし")
+
+                # ── 四半期推移チャート ────────────────────────────────
+                st.divider()
+                st.markdown("#### 📈 四半期売上 / 純利益 / 営業CF 推移")
+
+                _rev  = eq.get("_rev")
+                _ni   = eq.get("_ni")
+                _ocf  = eq.get("_ocf")
+                _q_dates = eq.get("_q_dates", [])
+
+                if _rev is not None and len(_rev) >= 2:
+                    x_labels = [str(d)[:7] for d in _q_dates[-len(_rev):]] if _q_dates else list(range(len(_rev)))
+                    fig_eq_bar = go.Figure()
+                    fig_eq_bar.add_trace(go.Bar(
+                        x=x_labels, y=(_rev / 1e6).values,
+                        name="売上高 (M$)", marker_color="#3b82f6", opacity=0.85
+                    ))
+                    if _ni is not None:
+                        fig_eq_bar.add_trace(go.Bar(
+                            x=x_labels[:len(_ni)], y=(_ni / 1e6).values,
+                            name="純利益 (M$)", marker_color="#10b981", opacity=0.85
+                        ))
+                    if _ocf is not None:
+                        fig_eq_bar.add_trace(go.Scatter(
+                            x=x_labels[:len(_ocf)], y=(_ocf / 1e6).values,
+                            name="営業CF (M$)", mode="lines+markers",
+                            line=dict(color="#f59e0b", width=2),
+                        ))
+                    fig_eq_bar.update_layout(
+                        **{**PLOTLY_LAYOUT, "height": 400, "barmode": "group",
+                           "title": f"{ticker} 四半期業績推移"},
+                    )
+                    st.plotly_chart(fig_eq_bar, use_container_width=True)
+                else:
+                    st.info("四半期チャートの生成に必要なデータが不足しています。")
 
             # 7. リスク・予想
             with tab_risk:
