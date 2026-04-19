@@ -1911,6 +1911,147 @@ def evaluate_weinstein_stage(ticker: str) -> dict:
         
     return res
 
+# ─────────────────────────────────────────────
+# Relative Strength 分析
+# ─────────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def fetch_relative_strength_data(ticker: str, sector: str) -> dict | None:
+    """銘柄・SPY・セクターETF・QQQ の価格を取得し比較用辞書を返す。"""
+    try:
+        sector_etf = SECTOR_ETF_MAP.get(sector, "SPY")
+        targets = [ticker, "SPY", sector_etf, "QQQ"]
+        # 重複除去（sector_etf が SPY と一致する場合など）
+        targets = list(dict.fromkeys(targets))
+
+        price_dict: dict[str, pd.Series] = {}
+        for t in targets:
+            try:
+                hist = yf.Ticker(t).history(period="2y", interval="1d")
+                if not hist.empty:
+                    price_dict[t] = hist["Close"]
+            except Exception as e:
+                print(f"RS Fetch: {t} skip - {e}")
+
+        if ticker not in price_dict or "SPY" not in price_dict:
+            return None
+
+        df = pd.DataFrame(price_dict).ffill().dropna()
+        if df.empty:
+            return None
+
+        return {
+            "df": df,
+            "ticker": ticker,
+            "sector_etf": sector_etf,
+            "sector": sector,
+        }
+    except Exception as e:
+        print(f"RS DATA ERROR: {e}")
+        return None
+
+
+def _period_return(series: pd.Series, days: int) -> float | None:
+    """series の末尾 days 個前からの騰落率（%）を返す。不足時は None。"""
+    if len(series) <= days:
+        return None
+    return (series.iloc[-1] / series.iloc[-days] - 1) * 100
+
+
+def calculate_relative_strength_metrics(rs_data: dict) -> dict:
+    """期間別騰落率・超過リターン・RSスコア・RSラインを算出して返す。"""
+    empty = {
+        "stock_return_1m": None, "stock_return_3m": None,
+        "stock_return_6m": None, "stock_return_12m": None,
+        "spy_return_1m": None,   "spy_return_3m": None,
+        "spy_return_6m": None,   "spy_return_12m": None,
+        "sector_return_1m": None,"sector_return_3m": None,
+        "sector_return_6m": None,"sector_return_12m": None,
+        "excess_vs_spy_1m": None,"excess_vs_spy_3m": None,
+        "excess_vs_spy_6m": None,"excess_vs_spy_12m": None,
+        "excess_vs_sector_3m": None, "excess_vs_sector_6m": None,
+        "rs_score": 0, "rs_status": "neutral",
+        "rs_new_high": False, "sector_etf": "SPY",
+        "rs_line": None,
+    }
+    if not rs_data:
+        return empty
+
+    df: pd.DataFrame = rs_data["df"]
+    ticker: str = rs_data["ticker"]
+    sector_etf: str = rs_data["sector_etf"]
+
+    if ticker not in df.columns or "SPY" not in df.columns:
+        return empty
+
+    stk = df[ticker]
+    spy = df["SPY"]
+    sec = df[sector_etf] if sector_etf in df.columns else None
+
+    period_days = {"1m": 21, "3m": 63, "6m": 126, "12m": 252}
+
+    m = {}
+    for label, days in period_days.items():
+        m[f"stock_return_{label}"] = _period_return(stk, days)
+        m[f"spy_return_{label}"]   = _period_return(spy, days)
+        m[f"sector_return_{label}"] = _period_return(sec, days) if sec is not None else None
+
+        sr  = m[f"stock_return_{label}"]
+        spr = m[f"spy_return_{label}"]
+        secr = m[f"sector_return_{label}"]
+        m[f"excess_vs_spy_{label}"] = (sr - spr) if (sr is not None and spr is not None) else None
+        if label in ("3m", "6m"):
+            m[f"excess_vs_sector_{label}"] = (sr - secr) if (sr is not None and secr is not None) else None
+
+    # ── RSライン（株価 / SPY 比率）を直近1年分で計算 ──────────────
+    recent_stk = stk.iloc[-252:] if len(stk) > 252 else stk
+    recent_spy = spy.reindex(recent_stk.index).ffill()
+    rs_line = (recent_stk / recent_spy) * 100   # 100基準化
+    rs_line_norm = (rs_line / rs_line.iloc[0]) * 100  # 起点100に正規化
+    m["rs_line"] = rs_line_norm
+
+    # RSライン直近新高値判定（直近4週が過去1年の最高値か）
+    if len(rs_line_norm) > 20:
+        peak_prev = rs_line_norm.iloc[:-20].max()
+        recent_max = rs_line_norm.iloc[-20:].max()
+        m["rs_new_high"] = bool(recent_max >= peak_prev)
+    else:
+        m["rs_new_high"] = False
+
+    # ── RSスコア計算（0〜100）──────────────────────────────────
+    score = 0
+    ex = {k: m.get(k) for k in [
+        "excess_vs_spy_1m", "excess_vs_spy_3m", "excess_vs_spy_6m", "excess_vs_spy_12m",
+        "excess_vs_sector_3m", "excess_vs_sector_6m",
+    ]}
+
+    # 対SPY
+    if ex["excess_vs_spy_1m"]  is not None and ex["excess_vs_spy_1m"]  > 0: score += 10
+    if ex["excess_vs_spy_3m"]  is not None and ex["excess_vs_spy_3m"]  > 0: score += 20
+    if ex["excess_vs_spy_6m"]  is not None and ex["excess_vs_spy_6m"]  > 0: score += 20
+    if ex["excess_vs_spy_12m"] is not None and ex["excess_vs_spy_12m"] > 0: score += 15
+    # 対セクター
+    if ex["excess_vs_sector_3m"] is not None and ex["excess_vs_sector_3m"] > 0: score += 15
+    if ex["excess_vs_sector_6m"] is not None and ex["excess_vs_sector_6m"] > 0: score += 10
+    # RSライン新高値ボーナス
+    if m["rs_new_high"]: score += 10
+
+    score = min(100, max(0, score))
+
+    # ── ステータス判定 ──
+    if score >= 65:
+        rs_status = "strong"
+    elif score >= 35:
+        rs_status = "neutral"
+    else:
+        rs_status = "weak"
+
+    m["rs_score"]  = score
+    m["rs_status"] = rs_status
+    m["sector_etf"] = sector_etf
+
+    return m
+
 def create_recommendation_pie_chart(recs_summary: pd.DataFrame):
     """アナリストの推奨レーティング構成をパイチャートで表示。"""
     if recs_summary is None or recs_summary.empty:
@@ -2741,8 +2882,8 @@ def render_stock_analyzer():
             st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
             
             # ─── タブ切り替え ───
-            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_risk, tab_ai, tab_cio = st.tabs(
-                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
+            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_risk, tab_ai, tab_cio = st.tabs(
+                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
             )
 
             # 1. 基本情報
@@ -3232,6 +3373,177 @@ def render_stock_analyzer():
                 else:
                     st.warning("この銘柄のステージ分析データを取得できませんでした。")
     
+            # RS分析タブ
+            with tab_rs:
+                st.divider()
+                st.markdown('<div class="section-title">⚡ Relative Strength 分析（相対強度）</div>', unsafe_allow_html=True)
+                st.caption("S&P500・セクターETFに対して、この銘柄が相対的にどれほど強いかを定量評価します。")
+
+                # ── データ取得 ──────────────────────────────────────
+                sector_raw = data.get("sector", "")
+                with st.spinner("比較データを取得中（SPY / セクターETF / QQQ）…"):
+                    rs_raw = fetch_relative_strength_data(ticker, sector_raw)
+
+                if rs_raw is None:
+                    st.warning("⚠️ RS分析に必要なデータを取得できませんでした。")
+                else:
+                    rs = calculate_relative_strength_metrics(rs_raw)
+                    sector_etf_used = rs.get("sector_etf", "N/A")
+
+                    # ── スコアゲージ & 総合判定 ────────────────────
+                    rs_score   = rs.get("rs_score", 0)
+                    rs_status  = rs.get("rs_status", "neutral")
+                    rs_new_hi  = rs.get("rs_new_high", False)
+
+                    status_cfg = {
+                        "strong":  ("💪 強い (Strong)",   "#10b981", "rgba(16,185,129,0.12)"),
+                        "neutral": ("⚖️ 中立 (Neutral)",  "#f59e0b", "rgba(245,158,11,0.12)"),
+                        "weak":    ("📉 弱い (Weak)",     "#ef4444", "rgba(239,68,68,0.12)"),
+                    }
+                    s_label, s_color, s_bg = status_cfg.get(rs_status, status_cfg["neutral"])
+
+                    col_score, col_verdict = st.columns([1, 2])
+                    with col_score:
+                        gauge_pct  = rs_score
+                        gauge_rest = 100 - gauge_pct
+                        fig_gauge = go.Figure(go.Pie(
+                            values=[gauge_pct, gauge_rest],
+                            hole=0.72,
+                            marker_colors=[s_color, "rgba(255,255,255,0.05)"],
+                            textinfo="none",
+                            sort=False,
+                        ))
+                        fig_gauge.add_annotation(
+                            text=f"<b>{rs_score}</b>",
+                            x=0.5, y=0.55, font=dict(size=36, color=s_color),
+                            showarrow=False
+                        )
+                        fig_gauge.add_annotation(
+                            text="RS Score",
+                            x=0.5, y=0.38, font=dict(size=12, color="#94a3b8"),
+                            showarrow=False
+                        )
+                        fig_gauge.update_layout(
+                            **{**PLOTLY_LAYOUT, "margin": dict(l=0, r=0, t=10, b=0)},
+                            showlegend=False,
+                            height=220,
+                        )
+                        st.plotly_chart(fig_gauge, use_container_width=True)
+
+                    with col_verdict:
+                        st.markdown(f'<div style="background:{s_bg}; border-left:5px solid {s_color}; border-radius:12px; padding:18px 20px; margin-bottom:12px;"><div style="font-size:1.5rem; font-weight:800; color:{s_color};">{s_label}</div><div style="font-size:0.85rem; color:#94a3b8; margin-top:4px;">使用セクターETF: <b style="color:#e2e8f0;">{sector_etf_used}</b>{"&nbsp;&nbsp;|&nbsp;&nbsp;<span style=\'color:#34d399;\'>📈 RSライン新高値更新中！</span>" if rs_new_hi else ""}</div></div>', unsafe_allow_html=True)
+
+                        # スコア内訳コメント
+                        ex_spy3m  = rs.get("excess_vs_spy_3m")
+                        ex_spy6m  = rs.get("excess_vs_spy_6m")
+                        ex_sec3m  = rs.get("excess_vs_sector_3m")
+                        bullets = []
+                        if ex_spy3m  is not None: bullets.append(f"対SPY 3M超過: **{ex_spy3m:+.1f}pp**")
+                        if ex_spy6m  is not None: bullets.append(f"対SPY 6M超過: **{ex_spy6m:+.1f}pp**")
+                        if ex_sec3m  is not None: bullets.append(f"対{sector_etf_used} 3M超過: **{ex_sec3m:+.1f}pp**")
+                        if rs_new_hi: bullets.append("RSラインが直近高値を更新")
+                        for b in bullets:
+                            st.markdown(f"- {b}")
+
+                    # ── 期間別パフォーマンス比較テーブル ────────────
+                    st.divider()
+                    st.markdown("#### 📊 期間別パフォーマンス比較")
+
+                    def fmt_pct(v):
+                        if v is None: return "—"
+                        arrow = "▲" if v >= 0 else "▼"
+                        color = "#34d399" if v >= 0 else "#f87171"
+                        return f"<span style='color:{color};'>{arrow} {v:+.1f}%</span>"
+
+                    periods_ui = [("1ヶ月", "1m"), ("3ヶ月", "3m"), ("6ヶ月", "6m"), ("12ヶ月", "12m")]
+                    rows = []
+                    for label, key in periods_ui:
+                        stk_r  = rs.get(f"stock_return_{key}")
+                        spy_r  = rs.get(f"spy_return_{key}")
+                        sec_r  = rs.get(f"sector_return_{key}")
+                        ex_spy = rs.get(f"excess_vs_spy_{key}")
+                        ex_sec = rs.get(f"excess_vs_sector_{key}")
+                        rows.append({
+                            "期間": label,
+                            f"{ticker}": fmt_pct(stk_r),
+                            "SPY": fmt_pct(spy_r),
+                            sector_etf_used: fmt_pct(sec_r),
+                            "vs SPY": fmt_pct(ex_spy),
+                            f"vs {sector_etf_used}": fmt_pct(ex_sec) if ex_sec is not None else "—",
+                        })
+
+                    tbl_html = "<table style='width:100%;border-collapse:collapse;font-size:0.9rem;'>"
+                    # ヘッダー
+                    tbl_html += "<tr>" + "".join(
+                        f"<th style='padding:8px 12px;text-align:center;color:#94a3b8;border-bottom:1px solid rgba(255,255,255,0.1);'>{col}</th>"
+                        for col in rows[0].keys()
+                    ) + "</tr>"
+                    # 行
+                    for r in rows:
+                        tbl_html += "<tr>" + "".join(
+                            f"<td style='padding:8px 12px;text-align:center;border-bottom:1px solid rgba(255,255,255,0.05);'>{v}</td>"
+                            for v in r.values()
+                        ) + "</tr>"
+                    tbl_html += "</table>"
+                    st.markdown(tbl_html, unsafe_allow_html=True)
+
+                    # ── RSラインチャート ─────────────────────────────
+                    st.divider()
+                    st.markdown("#### 📈 RSライン（対SPY）　— 上昇 → 市場よりアウトパフォーム")
+
+                    rs_line_series = rs.get("rs_line")
+                    if rs_line_series is not None and not rs_line_series.empty:
+                        # 価格も重ねて表示可能なようにサブプロット構成
+                        fig_rs = make_subplots(
+                            rows=2, cols=1,
+                            shared_xaxes=True,
+                            row_heights=[0.65, 0.35],
+                            vertical_spacing=0.04,
+                        )
+                        # 上段: 正規化株価比較（ticker, SPY, セクター）
+                        df_price = rs_raw["df"]
+                        t0 = df_price.index[-252] if len(df_price) > 252 else df_price.index[0]
+                        df_1y = df_price.loc[t0:].copy()
+                        norm_base = df_1y.iloc[0]
+                        df_norm = (df_1y / norm_base) * 100
+
+                        line_cfg = {
+                            ticker: ("#00d2ff", 2.5),
+                            "SPY":  ("#94a3b8", 1.5),
+                            sector_etf_used: ("#a78bfa", 1.5),
+                        }
+                        for col_name, (lcolor, lwidth) in line_cfg.items():
+                            if col_name in df_norm.columns:
+                                fig_rs.add_trace(go.Scatter(
+                                    x=df_norm.index, y=df_norm[col_name],
+                                    name=col_name,
+                                    line=dict(color=lcolor, width=lwidth),
+                                ), row=1, col=1)
+
+                        # 下段: RSライン
+                        rs_color = s_color
+                        fig_rs.add_trace(go.Scatter(
+                            x=rs_line_series.index,
+                            y=rs_line_series.values,
+                            name="RSライン",
+                            fill="tozeroy",
+                            fillcolor=s_bg,
+                            line=dict(color=rs_color, width=2),
+                        ), row=2, col=1)
+                        # 基準線 100
+                        fig_rs.add_hline(y=100, line_dash="dot", line_color="rgba(255,255,255,0.3)",
+                                         row=2, col=1)
+
+                        fig_rs.update_layout(
+                            **{**PLOTLY_LAYOUT, "height": 550, "legend": dict(orientation="h", yanchor="bottom", y=1.01, x=0)},
+                        )
+                        fig_rs.update_yaxes(title_text="パフォーマンス (100基準)", row=1, col=1)
+                        fig_rs.update_yaxes(title_text="RSライン", row=2, col=1)
+                        st.plotly_chart(fig_rs, use_container_width=True)
+                        st.caption("※ RSライン = 株価 / SPY の比率。100以上で推移 → SPYより強い。上昇トレンド中が理想。")
+                    else:
+                        st.info("RSラインチャートの生成に必要なデータが不足しています。")
+
             # 7. リスク・予想
             with tab_risk:
                 st.divider()
