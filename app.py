@@ -2916,6 +2916,345 @@ def calculate_supply_demand_score(sd_data: dict) -> dict:
     }
 
 
+# ─────────────────────────────────────────────
+# バリュエーション帯分析 (Valuation Band Analysis)
+# ─────────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def fetch_valuation_band_data(ticker: str) -> dict | None:
+    """バリュエーション帯分析に必要なデータを収集する。"""
+    try:
+        stock = yf.Ticker(ticker)
+        info  = stock.info
+
+        # ── 現在値 ──────────────────────────────────────
+        price       = info.get("currentPrice") or info.get("regularMarketPrice")
+        pe_ttm      = info.get("trailingPE")
+        pe_fwd      = info.get("forwardPE")
+        pb          = info.get("priceToBook")
+        mkt_cap     = info.get("marketCap")
+        shares      = info.get("sharesOutstanding")
+        total_debt  = info.get("totalDebt", 0) or 0
+        cash        = info.get("totalCash", 0) or 0
+        revenue_ttm = info.get("totalRevenue")
+        eps_ttm     = info.get("trailingEps")
+        eps_fwd     = info.get("forwardEps")
+        rev_growth  = info.get("revenueGrowth")   # small float
+        eps_growth  = info.get("earningsGrowth")  # small float
+        fcf_raw     = info.get("freeCashflow")
+        gross_margin= info.get("grossMargins")
+        sector      = info.get("sector", "")
+
+        # EV 簡易計算
+        ev = (mkt_cap or 0) + total_debt - cash if mkt_cap else None
+
+        # PSR
+        psr = (mkt_cap / revenue_ttm) if mkt_cap and revenue_ttm and revenue_ttm > 0 else None
+
+        # EV/Sales
+        ev_sales = (ev / revenue_ttm) if ev and revenue_ttm and revenue_ttm > 0 else None
+
+        # FCF Yield
+        fcf_yield = (fcf_raw / mkt_cap * 100) if fcf_raw and mkt_cap and mkt_cap > 0 else None
+
+        # PEG 風（PER / EPS成長率%）
+        eps_growth_pct = eps_growth * 100 if eps_growth else None
+        rev_growth_pct = rev_growth * 100 if rev_growth else None
+        peg = (pe_ttm / eps_growth_pct) if pe_ttm and eps_growth_pct and eps_growth_pct > 0 else None
+
+        # ── 過去レンジ推定（方法B: 価格÷年次EPS / 年次Sales で近似） ──
+        hist_pe_values  = []
+        hist_psr_values = []
+        try:
+            # 年次財務
+            inc = stock.income_stmt   # 列=年度
+            if inc is not None and not inc.empty:
+                inc_t = inc.T.sort_index()
+                for col in ["Net Income", "NetIncome", "Net Income Common Stockholders"]:
+                    if col in inc_t.columns:
+                        annual_ni = inc_t[col]
+                        break
+                else:
+                    annual_ni = None
+
+                for col in ["Total Revenue", "TotalRevenue", "Operating Revenue"]:
+                    if col in inc_t.columns:
+                        annual_rev = inc_t[col]
+                        break
+                else:
+                    annual_rev = None
+
+                shares_count = shares or 1
+                price_hist_5y = stock.history(period="5y", interval="1mo")["Close"]
+
+                for dt, row_date in inc_t.iterrows():
+                    # その年度直後の1ヶ月の平均株価を取得
+                    window = price_hist_5y.loc[
+                        price_hist_5y.index >= pd.Timestamp(dt)
+                    ].iloc[:3]  # 最大3ヶ月分
+                    if window.empty:
+                        continue
+                    avg_price = window.mean()
+
+                    if annual_ni is not None and dt in annual_ni.index:
+                        ni_val = annual_ni.loc[dt]
+                        if pd.notna(ni_val) and shares_count > 0 and ni_val > 0:
+                            hist_eps = ni_val / shares_count
+                            hist_pe  = avg_price / hist_eps if hist_eps > 0 else None
+                            if hist_pe and 5 < hist_pe < 300:
+                                hist_pe_values.append(hist_pe)
+
+                    if annual_rev is not None and dt in annual_rev.index:
+                        rev_val = annual_rev.loc[dt]
+                        if pd.notna(rev_val) and mkt_cap and rev_val > 0:
+                            hist_psr = avg_price * shares_count / rev_val if shares_count else None
+                            if hist_psr and 0 < hist_psr < 100:
+                                hist_psr_values.append(hist_psr)
+        except Exception as _e:
+            print(f"VAL HIST ERROR: {_e}")
+
+        # ── 同業比較データ ──────────────────────────────
+        peer_tickers = get_competitors(ticker)
+        peer_data = []
+        for pt in peer_tickers[:5]:
+            try:
+                pi = yf.Ticker(pt).info
+                peer_data.append({
+                    "ticker": pt,
+                    "pe":  pi.get("trailingPE"),
+                    "pb":  pi.get("priceToBook"),
+                    "psr": (pi.get("marketCap") / pi.get("totalRevenue"))
+                           if pi.get("marketCap") and pi.get("totalRevenue") else None,
+                    "rev_growth": (pi.get("revenueGrowth") or 0) * 100,
+                    "eps_growth": (pi.get("earningsGrowth") or 0) * 100,
+                })
+            except Exception:
+                pass
+
+        return {
+            "ticker": ticker, "price": price, "sector": sector,
+            "pe_ttm": pe_ttm, "pe_fwd": pe_fwd, "pb": pb,
+            "psr": psr, "ev_sales": ev_sales, "peg": peg, "fcf_yield": fcf_yield,
+            "mkt_cap": mkt_cap, "rev_growth_pct": rev_growth_pct,
+            "eps_growth_pct": eps_growth_pct, "gross_margin": gross_margin,
+            "hist_pe_values":  hist_pe_values,
+            "hist_psr_values": hist_psr_values,
+            "peer_data": peer_data,
+        }
+    except Exception as e:
+        print(f"VAL BAND FETCH ERROR: {e}")
+        return None
+
+
+def _band_position(current: float, values: list[float]) -> float | None:
+    """currentが values のリスト中で何%tile にあるかを返す (0〜1)。"""
+    if not values or current is None:
+        return None
+    below = sum(1 for v in values if v <= current)
+    return round(below / len(values), 2)
+
+
+def calculate_valuation_band(vb_data: dict) -> dict:
+    """バリュエーション帯スコアと各指標を算出して返す。"""
+    fallback = {
+        "valuation_score_v2": 50, "valuation_status": "fair",
+        "valuation_label_ja": "データ不足", "current_pe": None,
+        "historical_pe_median": None, "historical_pe_band_position": None,
+        "current_psr": None, "historical_psr_median": None,
+        "historical_psr_band_position": None, "peg": None, "fcf_yield": None,
+        "peer_pe_median": None, "peer_psr_median": None,
+        "peer_pe_gap": None, "peer_psr_gap": None,
+        "valuation_tier": "fair", "quality_flags": [], "risk_flags": [],
+        "comment": "データが取得できませんでした。",
+    }
+    if not vb_data:
+        return fallback
+
+    quality_flags: list[str] = []
+    risk_flags:    list[str] = []
+    score = 50  # ベース（50=fair）
+
+    pe   = vb_data.get("pe_ttm")
+    pb   = vb_data.get("pb")
+    psr  = vb_data.get("psr")
+    peg  = vb_data.get("peg")
+    fcfy = vb_data.get("fcf_yield")
+    rev_g = vb_data.get("rev_growth_pct")
+    eps_g = vb_data.get("eps_growth_pct")
+    hist_pe  = vb_data.get("hist_pe_values", [])
+    hist_psr = vb_data.get("hist_psr_values", [])
+    peers    = vb_data.get("peer_data", [])
+
+    # ── A. 自社過去レンジ比較 ─────────────────────────────
+    hist_pe_median = round(sorted(hist_pe)[len(hist_pe)//2], 1) if hist_pe else None
+    hist_psr_median = round(sorted(hist_psr)[len(hist_psr)//2], 1) if hist_psr else None
+    pe_band_pos  = _band_position(pe, hist_pe)   if pe  else None
+    psr_band_pos = _band_position(psr, hist_psr) if psr else None
+
+    hist_score_delta = 0
+    if pe_band_pos is not None:
+        if pe_band_pos <= 0.25:
+            hist_score_delta += 15
+            quality_flags.append(f"過去PER帯の下位25%圏（割安ゾーン） — 現在PER {pe:.1f}x / 中央値 {hist_pe_median:.1f}x")
+        elif pe_band_pos <= 0.5:
+            hist_score_delta += 7
+            quality_flags.append(f"過去PER帯の中間以下（やや割安）— 現在PER {pe:.1f}x / 中央値 {hist_pe_median:.1f}x")
+        elif pe_band_pos <= 0.75:
+            hist_score_delta -= 5
+            risk_flags.append(f"過去PER帯の上位50%圏（やや割高）— 現在PER {pe:.1f}x / 中央値 {hist_pe_median:.1f}x")
+        else:
+            hist_score_delta -= 15
+            risk_flags.append(f"過去PER帯の上位25%内（割高ゾーン）— 現在PER {pe:.1f}x / 中央値 {hist_pe_median:.1f}x")
+
+    if psr_band_pos is not None:
+        if psr_band_pos <= 0.25:
+            hist_score_delta += 8
+            quality_flags.append(f"過去PSR帯の下位25%（割安）— 現在PSR {psr:.1f}x / 中央値 {hist_psr_median:.1f}x")
+        elif psr_band_pos >= 0.75:
+            hist_score_delta -= 8
+            risk_flags.append(f"過去PSR帯の上位25%（割高）— 現在PSR {psr:.1f}x / 中央値 {hist_psr_median:.1f}x")
+
+    score += hist_score_delta
+
+    # ── B. 同業比較 ───────────────────────────────────────
+    peer_pe_vals  = [p["pe"]  for p in peers if p.get("pe")  and p["pe"] > 0]
+    peer_psr_vals = [p["psr"] for p in peers if p.get("psr") and p["psr"] > 0]
+    peer_pe_med  = round(sorted(peer_pe_vals)[len(peer_pe_vals)//2], 1)  if peer_pe_vals  else None
+    peer_psr_med = round(sorted(peer_psr_vals)[len(peer_psr_vals)//2], 1) if peer_psr_vals else None
+
+    peer_pe_gap  = round((pe  / peer_pe_med  - 1) * 100, 1) if pe  and peer_pe_med  and peer_pe_med  > 0 else None
+    peer_psr_gap = round((psr / peer_psr_med - 1) * 100, 1) if psr and peer_psr_med and peer_psr_med > 0 else None
+
+    peer_score_delta = 0
+    if peer_pe_gap is not None:
+        if peer_pe_gap <= -20:
+            peer_score_delta += 12
+            quality_flags.append(f"同業比PER {peer_pe_gap:+.0f}% — 競合より大幅に割安")
+        elif peer_pe_gap <= -5:
+            peer_score_delta += 6
+            quality_flags.append(f"同業比PER {peer_pe_gap:+.0f}% — 競合よりやや割安")
+        elif peer_pe_gap >= 30:
+            peer_score_delta -= 12
+            risk_flags.append(f"同業比PER {peer_pe_gap:+.0f}% — 競合より大幅に割高（プレミアムが大きい）")
+        elif peer_pe_gap >= 10:
+            peer_score_delta -= 5
+            risk_flags.append(f"同業比PER {peer_pe_gap:+.0f}% — 競合よりやや割高")
+
+    if peer_psr_gap is not None:
+        if peer_psr_gap <= -20:
+            peer_score_delta += 8
+        elif peer_psr_gap >= 30:
+            peer_score_delta -= 8
+            risk_flags.append(f"同業比PSR {peer_psr_gap:+.0f}% — 売上評価が競合より大幅に高い")
+
+    score += peer_score_delta
+
+    # ── C. 成長率調整後評価（PEG 的） ──────────────────────
+    growth_score_delta = 0
+    if peg is not None:
+        if peg < 1.0:
+            growth_score_delta += 15
+            quality_flags.append(f"PEG {peg:.2f} < 1.0 — 成長率に対して過小評価（割安サイン）")
+        elif peg < 1.5:
+            growth_score_delta += 7
+            quality_flags.append(f"PEG {peg:.2f} — 成長率に対して概ね妥当")
+        elif peg < 2.5:
+            growth_score_delta -= 0
+        elif peg < 4.0:
+            growth_score_delta -= 8
+            risk_flags.append(f"PEG {peg:.2f} — 成長率に対して割高気味")
+        else:
+            growth_score_delta -= 15
+            risk_flags.append(f"PEG {peg:.2f} — 成長率に対して大幅に割高（過熱の可能性）")
+    elif pe and rev_g:
+        # PEG代替: PER / 売上成長率でざっくり補正
+        rough_peg = pe / rev_g if rev_g > 0 else None
+        if rough_peg and rough_peg < 1.0:
+            growth_score_delta += 10
+            quality_flags.append(f"PER {pe:.1f}x / 売上成長率 {rev_g:.1f}% — 成長に対して妥当な評価")
+        elif rough_peg and rough_peg > 3.0:
+            growth_score_delta -= 10
+            risk_flags.append(f"PER {pe:.1f}x / 売上成長率 {rev_g:.1f}% — 成長対比で割高気味")
+
+    # PSR vs 成長率（高成長なら高PSRは許容）
+    if psr and rev_g:
+        psr_growth_ratio = psr / rev_g if rev_g > 0 else None
+        if psr_growth_ratio and psr_growth_ratio < 0.3:
+            growth_score_delta += 5
+            quality_flags.append(f"PSR {psr:.1f}x / 売上成長 {rev_g:.1f}% — 収益性と整合的")
+        elif psr_growth_ratio and psr_growth_ratio > 1.0:
+            growth_score_delta -= 5
+            risk_flags.append(f"PSR {psr:.1f}x / 売上成長 {rev_g:.1f}% — 成長率に対してPSRが高い")
+
+    score += growth_score_delta
+
+    # ── FCF Yield 補正 ────────────────────────────────────
+    if fcfy is not None:
+        if fcfy >= 4.0:
+            score += 8; quality_flags.append(f"FCF利回り {fcfy:.1f}% — キャッシュ創出力が高い")
+        elif fcfy >= 2.0:
+            score += 3
+        elif fcfy < 0:
+            score -= 5; risk_flags.append(f"FCF利回りがマイナス ({fcfy:.1f}%) — FCF赤字")
+
+    score = max(0, min(100, score))
+
+    # ── ステータス判定 ─────────────────────────────────────
+    if score >= 72:
+        status = "cheap";    status_ja = "割安ゾーン（バリュー優位）"
+    elif score >= 55:
+        status = "fair";     status_ja = "適正評価（フェアバリュー付近）"
+    elif score >= 38:
+        status = "slightly_expensive"; status_ja = "やや割高（プレミアム圏）"
+    else:
+        status = "expensive"; status_ja = "割高ゾーン（過熱の可能性）"
+
+    # ── コメント ───────────────────────────────────────────
+    parts = []
+    if pe_band_pos is not None and pe_band_pos <= 0.35:
+        parts.append(f"自社の過去PERレンジで見ると割安")
+    elif pe_band_pos is not None and pe_band_pos >= 0.75:
+        parts.append("自社の過去PERレンジで見ると割高気味")
+    if peer_pe_gap is not None and peer_pe_gap <= -10:
+        parts.append("同業他社より低い評価倍率")
+    elif peer_pe_gap is not None and peer_pe_gap >= 20:
+        parts.append("同業他社より高い評価倍率（プレミアム）")
+    if peg and peg < 1.5:
+        parts.append("PEG（成長調整後PER）は良好")
+    elif peg and peg > 3.0:
+        parts.append("成長率対比でPERが高い点に注意")
+    comment = "、".join(parts) + "。" if parts else "複数指標を総合した評価です。詳細は各項目をご確認ください。"
+
+    return {
+        "valuation_score_v2":          score,
+        "valuation_status":            status,
+        "valuation_label_ja":          status_ja,
+        "current_pe":                  pe,
+        "current_pe_fwd":              vb_data.get("pe_fwd"),
+        "current_pb":                  pb,
+        "current_psr":                 psr,
+        "current_ev_sales":            vb_data.get("ev_sales"),
+        "peg":                         peg,
+        "fcf_yield":                   fcfy,
+        "rev_growth_pct":              rev_g,
+        "eps_growth_pct":              eps_g,
+        "historical_pe_median":        hist_pe_median,
+        "historical_pe_band_position": pe_band_pos,
+        "historical_psr_median":       hist_psr_median,
+        "historical_psr_band_position": psr_band_pos,
+        "hist_pe_values":              hist_pe,
+        "hist_psr_values":             hist_psr,
+        "peer_pe_median":              peer_pe_med,
+        "peer_psr_median":             peer_psr_med,
+        "peer_pe_gap":                 peer_pe_gap,
+        "peer_psr_gap":                peer_psr_gap,
+        "peer_data":                   peers,
+        "quality_flags":               quality_flags,
+        "risk_flags":                  risk_flags,
+        "comment":                     comment,
+    }
+
+
 def create_recommendation_pie_chart(recs_summary: pd.DataFrame):
     """アナリストの推奨レーティング構成をパイチャートで表示。"""
     if recs_summary is None or recs_summary.empty:
@@ -3746,8 +4085,8 @@ def render_stock_analyzer():
             st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
             
             # ─── タブ切り替え ───
-            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_sd, tab_risk, tab_ai, tab_cio = st.tabs(
-                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "⚖️ 需給分析", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
+            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_sd, tab_val, tab_risk, tab_ai, tab_cio = st.tabs(
+                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "⚖️ 需給分析", "📏 バリュエーション帯", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
             )
 
             # 1. 基本情報
@@ -4906,6 +5245,211 @@ def render_stock_analyzer():
                     if "Value" in disp_df.columns:
                         disp_df["Value"] = disp_df["Value"].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "—")
                     st.dataframe(disp_df, use_container_width=True)
+
+            # 📏 バリュエーション帯分析タブ
+            with tab_val:
+                st.divider()
+                st.markdown('<div class="section-title">📏 バリュエーション帯分析 (Valuation Band)</div>', unsafe_allow_html=True)
+                st.caption("自社の過去レンジ・同業比較・成長率調整の3軸でバリュエーションを評価します。")
+
+                with st.spinner("バリュエーションデータを取得・解析中（同業比較含む）..."):
+                    vb_raw = fetch_valuation_band_data(ticker)
+                    vb = calculate_valuation_band(vb_raw)
+
+                vb_score  = vb.get("valuation_score_v2", 50)
+                vb_status = vb.get("valuation_status", "fair")
+                vb_label  = vb.get("valuation_label_ja", "—")
+                vb_comment= vb.get("comment", "")
+
+                status_cfg_vb = {
+                    "cheap":             ("💎 割安",     "#10b981", "rgba(16,185,129,0.15)"),
+                    "fair":              ("⚖️ 適正",     "#3b82f6", "rgba(59,130,246,0.15)"),
+                    "slightly_expensive":("🟡 やや割高", "#f59e0b", "rgba(245,158,11,0.15)"),
+                    "expensive":         ("🔴 割高",     "#ef4444", "rgba(239,68,68,0.15)"),
+                }
+                vb_icon, vb_color, vb_bg = status_cfg_vb.get(vb_status, status_cfg_vb["fair"])
+
+                # ── スコアゲージ & 総合ステータス ────────────────────
+                col_vb1, col_vb2 = st.columns([1, 2])
+                with col_vb1:
+                    fig_vb_gauge = go.Figure(go.Pie(
+                        values=[vb_score, 100 - vb_score],
+                        hole=0.72,
+                        marker_colors=[vb_color, "rgba(255,255,255,0.05)"],
+                        textinfo="none", sort=False,
+                    ))
+                    fig_vb_gauge.add_annotation(
+                        text=f"<b>{vb_score}</b>",
+                        x=0.5, y=0.55, font=dict(size=36, color=vb_color), showarrow=False
+                    )
+                    fig_vb_gauge.add_annotation(
+                        text="Val Score", x=0.5, y=0.38,
+                        font=dict(size=12, color="#94a3b8"), showarrow=False
+                    )
+                    fig_vb_gauge.update_layout(
+                        **{**PLOTLY_LAYOUT, "margin": dict(l=0, r=0, t=10, b=0)},
+                        showlegend=False, height=220,
+                    )
+                    st.plotly_chart(fig_vb_gauge, use_container_width=True)
+
+                with col_vb2:
+                    st.markdown(
+                        f'<div style="background:{vb_bg}; border-left:6px solid {vb_color}; '
+                        f'border-radius:12px; padding:18px 20px;">'
+                        f'<div style="font-size:0.8rem; color:#94a3b8;">バリュエーション総合判定</div>'
+                        f'<div style="font-size:1.5rem; font-weight:900; color:{vb_color};">'
+                        f'{vb_icon} {vb_label}</div></div>',
+                        unsafe_allow_html=True
+                    )
+                    st.markdown(f'<div class="ai-report" style="margin-top:10px;">{vb_comment}</div>',
+                                unsafe_allow_html=True)
+
+                # ── 現在の主要指標 ─────────────────────────────────
+                st.divider()
+                st.markdown("#### 📊 現在の主要バリュエーション指標")
+                vm1, vm2, vm3, vm4 = st.columns(4)
+                with vm1:
+                    pe = vb.get("current_pe")
+                    pe_fwd = vb.get("current_pe_fwd")
+                    st.metric("PER (TTM)", f"{pe:.1f}x" if pe else "—",
+                              delta=f"予{pe_fwd:.1f}x" if pe_fwd else None)
+                with vm2:
+                    psr = vb.get("current_psr")
+                    st.metric("PSR", f"{psr:.1f}x" if psr else "—", help="時価総額÷売上高")
+                with vm3:
+                    peg = vb.get("peg")
+                    peg_color = "#10b981" if (peg and peg < 1.5) else ("#ef4444" if (peg and peg > 3) else "#f59e0b")
+                    if peg:
+                        st.markdown(
+                            f'<div style="text-align:center;"><div style="font-size:0.8rem; color:#94a3b8;">PEG</div>'
+                            f'<div style="font-size:1.4rem; font-weight:700; color:{peg_color};">{peg:.2f}x</div></div>',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        st.metric("PEG", "—", help="PER÷EPS成長率%")
+                with vm4:
+                    fcfy = vb.get("fcf_yield")
+                    fcfy_color = "#10b981" if (fcfy and fcfy >= 3) else ("#ef4444" if (fcfy and fcfy < 0) else "#f59e0b")
+                    st.metric("FCF利回り", f"{fcfy:.1f}%" if fcfy is not None else "—",
+                              help="フリーキャッシュフロー / 時価総額")
+
+                # ── A: 自社の過去レンジ比較 ──────────────────────────
+                st.divider()
+                st.markdown("#### 🅐 自社の過去レンジ比較")
+                hist_pe_vals  = vb.get("hist_pe_values", [])
+                hist_psr_vals = vb.get("hist_psr_values", [])
+                pe_band_pos   = vb.get("historical_pe_band_position")
+                hist_pe_med   = vb.get("historical_pe_median")
+
+                col_ha, col_hb = st.columns(2)
+                with col_ha:
+                    st.markdown("**PER 過去レンジ**")
+                    if hist_pe_vals and pe:
+                        fig_hist_pe = go.Figure()
+                        fig_hist_pe.add_trace(go.Histogram(
+                            x=hist_pe_vals, name="過去PER",
+                            marker_color="#3b82f6", opacity=0.7, nbinsx=15
+                        ))
+                        fig_hist_pe.add_vline(
+                            x=pe, line_color="#f59e0b", line_width=2,
+                            annotation_text=f"現在 {pe:.1f}x", annotation_position="top right"
+                        )
+                        if hist_pe_med:
+                            fig_hist_pe.add_vline(
+                                x=hist_pe_med, line_color="#94a3b8", line_width=1, line_dash="dash",
+                                annotation_text=f"中央値 {hist_pe_med:.1f}x", annotation_position="top left"
+                            )
+                        fig_hist_pe.update_layout(
+                            **{**PLOTLY_LAYOUT, "height": 260, "showlegend": False,
+                               "xaxis_title": "PER", "yaxis_title": "頻度"},
+                        )
+                        st.plotly_chart(fig_hist_pe, use_container_width=True)
+                        if pe_band_pos is not None:
+                            pct_label = f"{pe_band_pos*100:.0f}パーセンタイル"
+                            band_color = "#10b981" if pe_band_pos <= 0.4 else ("#ef4444" if pe_band_pos >= 0.75 else "#f59e0b")
+                            st.markdown(f'現在PERは過去レンジの <b style="color:{band_color};">{pct_label}</b>（中央値 {hist_pe_med:.1f}x）', unsafe_allow_html=True)
+                    else:
+                        st.caption("過去PERデータが取得できませんでした。")
+
+                with col_hb:
+                    st.markdown("**PSR 過去レンジ**")
+                    hist_psr_med = vb.get("historical_psr_median")
+                    psr_band_pos = vb.get("historical_psr_band_position")
+                    if hist_psr_vals and psr:
+                        fig_hist_psr = go.Figure()
+                        fig_hist_psr.add_trace(go.Histogram(
+                            x=hist_psr_vals, name="過去PSR",
+                            marker_color="#a78bfa", opacity=0.7, nbinsx=15
+                        ))
+                        fig_hist_psr.add_vline(
+                            x=psr, line_color="#f59e0b", line_width=2,
+                            annotation_text=f"現在 {psr:.1f}x", annotation_position="top right"
+                        )
+                        if hist_psr_med:
+                            fig_hist_psr.add_vline(
+                                x=hist_psr_med, line_color="#94a3b8", line_width=1, line_dash="dash",
+                                annotation_text=f"中央値 {hist_psr_med:.1f}x", annotation_position="top left"
+                            )
+                        fig_hist_psr.update_layout(
+                            **{**PLOTLY_LAYOUT, "height": 260, "showlegend": False,
+                               "xaxis_title": "PSR", "yaxis_title": "頻度"},
+                        )
+                        st.plotly_chart(fig_hist_psr, use_container_width=True)
+                        if psr_band_pos is not None:
+                            pct_lbl = f"{psr_band_pos*100:.0f}パーセンタイル"
+                            pc = "#10b981" if psr_band_pos <= 0.4 else ("#ef4444" if psr_band_pos >= 0.75 else "#f59e0b")
+                            st.markdown(f'現在PSRは過去レンジの <b style="color:{pc};">{pct_lbl}</b>（中央値 {hist_psr_med:.1f}x）', unsafe_allow_html=True)
+                    else:
+                        st.caption("過去PSRデータが取得できませんでした。")
+
+                # ── B: 同業比較テーブル ──────────────────────────────
+                st.divider()
+                st.markdown("#### 🅑 同業他社バリュエーション比較")
+                peers = vb.get("peer_data", [])
+                if peers:
+                    peer_rows = []
+                    for p in peers:
+                        peer_rows.append({
+                            "銘柄":         p["ticker"],
+                            "PER":          f"{p['pe']:.1f}x"  if p.get("pe")  else "—",
+                            "P/B":          f"{p['pb']:.1f}x"  if p.get("pb")  else "—",
+                            "PSR":          f"{p['psr']:.1f}x" if p.get("psr") else "—",
+                            "売上成長率":   f"{p['rev_growth']:+.1f}%" if p.get("rev_growth") else "—",
+                            "EPS成長率":    f"{p['eps_growth']:+.1f}%" if p.get("eps_growth") else "—",
+                        })
+                    # 自社を先頭に追加
+                    self_row = {
+                        "銘柄":       f"【{ticker}】",
+                        "PER":        f"{pe:.1f}x"   if pe   else "—",
+                        "P/B":        f"{vb.get('current_pb'):.1f}x" if vb.get("current_pb") else "—",
+                        "PSR":        f"{psr:.1f}x"  if psr  else "—",
+                        "売上成長率": f"{vb.get('rev_growth_pct'):+.1f}%" if vb.get("rev_growth_pct") else "—",
+                        "EPS成長率":  f"{vb.get('eps_growth_pct'):+.1f}%" if vb.get("eps_growth_pct") else "—",
+                    }
+                    st.dataframe([self_row] + peer_rows, use_container_width=True)
+
+                    peer_pe_med  = vb.get("peer_pe_median")
+                    peer_pe_gap  = vb.get("peer_pe_gap")
+                    peer_psr_gap = vb.get("peer_psr_gap")
+                    if peer_pe_med:
+                        gap_c = "#10b981" if (peer_pe_gap and peer_pe_gap <= -5) else ("#ef4444" if (peer_pe_gap and peer_pe_gap >= 15) else "#94a3b8")
+                        st.markdown(
+                            f'同業PER中央値: **{peer_pe_med:.1f}x** &nbsp; 自社との乖離: '
+                            f'<b style="color:{gap_c};">{peer_pe_gap:+.0f}%</b>' if peer_pe_gap is not None else f'同業PER中央値: **{peer_pe_med:.1f}x**',
+                            unsafe_allow_html=True
+                        )
+                else:
+                    st.caption("同業データが取得できませんでした。")
+
+                # ── 強み / 懸念フラグ ─────────────────────────────
+                st.divider()
+                col_vbqf, col_vbrf = st.columns(2)
+                with col_vbqf:
+                    st.markdown("#### ✅ 割安・優位ポイント")
+                    for f in vb.get("quality_flags", []) or ["特になし"]: st.markdown(f"- {f}")
+                with col_vbrf:
+                    st.markdown("#### ⚠️ 割高・懸念ポイント")
+                    for f in vb.get("risk_flags", []) or ["特になし"]: st.markdown(f"- {f}")
 
             # 7. リスク・予想
             with tab_risk:
