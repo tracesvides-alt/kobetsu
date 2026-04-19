@@ -1039,6 +1039,36 @@ def render_short_term_watchlist_panel(snap: dict):
         with c2:
             st.markdown(f"**🎯 行動計画:**  \n{det['action_if_triggered']}")
 
+def render_short_term_alert_panel(snap: dict):
+    """短期アラート条件を上下対比で表示する"""
+    import streamlit as st
+    if "alert_details" not in snap:
+        return
+        
+    det = snap["alert_details"]
+    
+    # 優先度によって色を変える
+    priority_color = "#94a3b8" # low
+    if det["alert_priority"] == "high": priority_color = "#ef4444"
+    elif det["alert_priority"] == "medium": priority_color = "#f59e0b"
+
+    with st.container(border=True):
+        st.markdown(f"##### 🔔 アラート条件マトリクス <span style='font-size:0.8rem; background:{priority_color}22; color:{priority_color}; padding:2px 8px; border-radius:8px; border:1px solid {priority_color}44;'>{det['alert_priority_label_ja']}</span>", unsafe_allow_html=True)
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("<div style='color:#10b981; font-weight:700; margin-bottom:8px;'>📈 上方向 (注目トリガー)</div>", unsafe_allow_html=True)
+            for a in det["upside_alerts"]:
+                st.markdown(f"<div style='font-size:0.85rem; color:#e2e8f0; margin-bottom:4px;'>⬆️ {a}</div>", unsafe_allow_html=True)
+                
+        with c2:
+            st.markdown("<div style='color:#ef4444; font-weight:700; margin-bottom:8px;'>📉 下方向 (警戒トリガー)</div>", unsafe_allow_html=True)
+            for a in det["downside_alerts"]:
+                st.markdown(f"<div style='font-size:0.85rem; color:#e2e8f0; margin-bottom:4px;'>⬇️ {a}</div>", unsafe_allow_html=True)
+        
+        st.divider()
+        st.markdown(f"**💡 総括:** {det['comment']}")
+
 @st.cache_data(ttl=86400)
 def get_translated_summary(summary_text: str) -> str:
     """事業概要をAIなしで安定して日本語に翻訳する。"""
@@ -5479,10 +5509,69 @@ def calculate_short_term_snapshot(ticker: str, data: dict) -> dict:
             watchlist_res = evaluate_short_term_watchlist_conditions(data, breakout_res, vwap_res, res["trend"])
             res["watchlist_details"] = watchlist_res
             # --------------------------------
+
+            # --- 短期アラート条件の呼び出し ---
+            alert_res = evaluate_short_term_alert_conditions(data, breakout_res, vwap_res, res["trend"], setup_res)
+            res["alert_details"] = alert_res
+            # --------------------------------
         except Exception:
             pass
             
     return res
+
+def evaluate_short_term_alert_conditions(data: dict, breakout_res: dict, vwap_res: dict, trend_label: str, setup_res: dict) -> dict:
+    """注目すべき上下のトリガー条件を整理する"""
+    upside = []
+    downside = []
+    
+    # 20日高値
+    h20 = breakout_res.get("high_20", 0)
+    if breakout_res.get("status_id") == "breakout_candidate":
+        upside.append(f"20日高値(${h20:.2f})を上放れ継続")
+    else:
+        upside.append(f"20日高値(${h20:.2f})を明確に突破")
+        
+    # VWAP
+    vwap_val = vwap_res.get("vwap_approx", 0)
+    if vwap_res.get("status_id") in ["strong_today", "gap_monitor"]:
+        upside.append("当日VWAP上での推移を維持")
+        downside.append(f"VWAP(${vwap_val:.2f})を明確に割り込み")
+    else:
+        upside.append(f"VWAP(${vwap_val:.2f})を上抜けて安定")
+        downside.append("VWAP下での推移継続（弱気圏）")
+
+    # 出来高
+    upside.append("出来高倍率 1.2x以上の維持または再加速")
+    
+    # 当日動向
+    downside.append("当日高値を更新できず失速")
+    if data.get("price", 0) < data.get("open", 0):
+        downside.append("寄り付き価格を回復できず（陰線化）")
+    else:
+        downside.append("寄り付き価格(Open)を割り込み")
+
+    # トレンド
+    downside.append("5日移動平均線を下抜け")
+    downside.append("20日移動平均線を割り込み（トレンド転換）")
+
+    # 優先度
+    score = setup_res.get("score", 0)
+    priority = "low"
+    label = "監視優先度：低"
+    if score >= 75:
+        priority = "high"; label = "監視優先度：最高 🔥"
+    elif score >= 50 or breakout_res.get("status_id") == "breakout_approaching":
+        priority = "medium"; label = "監視優先度：中 👁️"
+
+    return {
+        "alert_priority": priority,
+        "alert_priority_label_ja": label,
+        "upside_alerts": upside[:3],
+        "downside_alerts": downside[:3],
+        "primary_trigger": upside[0],
+        "primary_risk_trigger": downside[0],
+        "comment": "セットアップ完成間近のため、最上位トリガーを注視。" if priority == "high" else "条件が整うまで、上下の境界線を監視。"
+    }
 
 def evaluate_short_term_watchlist_conditions(data: dict, breakout_res: dict, vwap_res: dict, trend_label: str) -> dict:
     """現在の状態に対して足りない条件と仕掛けトリガーを特定する"""
@@ -5890,6 +5979,9 @@ def render_stock_analyzer():
                 
                 # 短期ウォッチリスト条件表示
                 render_short_term_watchlist_panel(snap)
+                
+                # 短期アラート条件表示
+                render_short_term_alert_panel(snap)
 
                 # 短期モード
                 tabs = st.tabs(["📊 基本情報", "🔍 チャート"])
