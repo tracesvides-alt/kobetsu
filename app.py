@@ -2680,6 +2680,242 @@ def calculate_earnings_quality(eq_data: dict) -> dict:
     }
 
 
+# ─────────────────────────────────────────────
+# 需給分析 (Supply / Demand Analysis)
+# ─────────────────────────────────────────────
+
+@st.cache_data(ttl=1800)
+def fetch_supply_demand_extended(ticker: str) -> dict:
+    """fetch_supply_demand_data を拡張し、出来高スコア算出に必要な日足データも取得する。"""
+    base = fetch_supply_demand_data(ticker)
+    try:
+        stock = yf.Ticker(ticker)
+        info  = stock.info
+
+        # 追加: floatShares, sharesOutstanding
+        base["float_shares"]    = info.get("floatShares")
+        base["shares_outstanding"] = info.get("sharesOutstanding")
+        base["avg_volume_10d"]  = info.get("averageVolume10days") or info.get("averageDailyVolume10Day")
+        base["avg_volume_3m"]   = info.get("averageVolume")
+
+        # 日足価格・出来高（1年分）
+        hist = stock.history(period="1y", interval="1d")
+        if not hist.empty:
+            base["hist"] = hist[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        else:
+            base["hist"] = pd.DataFrame()
+    except Exception as e:
+        print(f"SD EXTENDED ERROR: {e}")
+        base.setdefault("hist", pd.DataFrame())
+    return base
+
+
+def calculate_supply_demand_score(sd_data: dict) -> dict:
+    """需給スコアと各指標を集約して返す。"""
+    fallback = {
+        "supply_demand_score": 0,
+        "supply_demand_status": "neutral",
+        "summary_label_ja": "データ不足",
+        "institutional_ownership_pct": None,
+        "institutional_support": "unknown",
+        "short_float_pct": None,
+        "days_to_cover": None,
+        "short_squeeze_potential": "unknown",
+        "insider_bias": "neutral",
+        "insider_bias_label_ja": "データなし",
+        "volume_ratio_20d": None,
+        "up_volume_strength": "unknown",
+        "quality_flags": [],
+        "risk_flags": [],
+        "comment": "データが取得できませんでした。",
+    }
+    if not sd_data:
+        return fallback
+
+    quality_flags: list[str] = []
+    risk_flags:    list[str] = []
+    score = 50  # ベース
+
+    # ── 1. 機関保有比率 ───────────────────────────────────
+    inst_raw = sd_data.get("inst_ownership")
+    inst_pct = round(inst_raw * 100, 1) if inst_raw is not None else None
+
+    if inst_pct is not None:
+        if inst_pct >= 70:
+            score += 10; quality_flags.append(f"機関保有比率が高い ({inst_pct:.1f}%) — 安定した買い手基盤")
+            inst_support = "strong"
+        elif inst_pct >= 40:
+            score +=  5; quality_flags.append(f"機関保有比率は中程度 ({inst_pct:.1f}%)")
+            inst_support = "moderate"
+        elif inst_pct >= 10:
+            score -=  0; inst_support = "low"
+        else:
+            score -=  5; risk_flags.append(f"機関保有比率が低い ({inst_pct:.1f}%) — 機関の支えが弱い")
+            inst_support = "weak"
+    else:
+        inst_support = "unknown"
+
+    # ── 2. 空売り評価 ────────────────────────────────────
+    short_float = sd_data.get("short_float")
+    short_ratio = sd_data.get("short_ratio")
+    short_pct   = round(short_float * 100, 1) if short_float is not None else None
+    dtc         = round(short_ratio, 1)        if short_ratio is not None else None
+
+    squeeze_potential = "unknown"
+    if short_pct is not None:
+        if short_pct >= 20:
+            score += 8; quality_flags.append(f"空売り比率が高い ({short_pct:.1f}%) — 踏み上げ余地が大きい")
+            squeeze_potential = "high"
+        elif short_pct >= 10:
+            score += 3; quality_flags.append(f"空売り比率が中程度 ({short_pct:.1f}%) — 踏み上げ余地あり")
+            squeeze_potential = "medium"
+        elif short_pct >= 5:
+            score +=  0; squeeze_potential = "low"
+        else:
+            score -=  3; risk_flags.append(f"空売り比率が低い ({short_pct:.1f}%) — 踏み上げによる上昇は期待薄")
+            squeeze_potential = "minimal"
+
+    if dtc is not None:
+        if dtc >= 5:
+            score += 5; quality_flags.append(f"Days to Cover: {dtc:.1f}日 — 踏み上げ時の上昇インパクトが大きい")
+        elif dtc <= 1:
+            score -= 3; risk_flags.append(f"Days to Cover: {dtc:.1f}日 — ショートカバーは短期間で済む")
+
+    # ── 3. インサイダー売買バイアス ──────────────────────
+    insider_df = sd_data.get("insider_trades", pd.DataFrame())
+    insider_bias   = "neutral"
+    insider_bias_ja = "インサイダー中立"
+
+    if insider_df is not None and not insider_df.empty and "Side" in insider_df.columns:
+        try:
+            # 直近3ヶ月に絞る
+            cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=90)
+            if "Date" in insider_df.columns:
+                recent = insider_df[pd.to_datetime(insider_df["Date"], utc=True) >= cutoff]
+            else:
+                recent = insider_df
+
+            buy_cnt  = int((recent["Side"] == "Buy").sum())
+            sell_cnt = int((recent["Side"] == "Sell").sum())
+            total    = buy_cnt + sell_cnt
+
+            if total > 0:
+                buy_ratio = buy_cnt / total
+                if buy_ratio >= 0.6:
+                    score += 8; insider_bias = "buying"; insider_bias_ja = "インサイダー買い優勢"
+                    quality_flags.append(f"インサイダー買い優勢 (直近3ヶ月: 買{buy_cnt}件 / 売{sell_cnt}件)")
+                elif buy_ratio <= 0.3:
+                    score -= 8; insider_bias = "selling"; insider_bias_ja = "インサイダー売り優勢"
+                    risk_flags.append(f"インサイダー売り優勢 (直近3ヶ月: 買{buy_cnt}件 / 売{sell_cnt}件)")
+                else:
+                    insider_bias = "mixed"; insider_bias_ja = "インサイダー売買混在"
+        except Exception:
+            pass
+
+    # ── 4. 出来高分析 ──────────────────────────────────
+    hist = sd_data.get("hist", pd.DataFrame())
+    volume_ratio_20d = None
+    up_vol_strength  = "unknown"
+
+    if not hist.empty and len(hist) >= 25:
+        vol   = hist["Volume"]
+        close = hist["Close"]
+
+        vol_ma20 = vol.rolling(20).mean()
+        vol_ma50 = vol.rolling(50).mean() if len(hist) >= 55 else None
+
+        last_vol   = vol.iloc[-1]
+        last_ma20  = vol_ma20.iloc[-1]
+        volume_ratio_20d = round(last_vol / last_ma20, 2) if last_ma20 > 0 else None
+
+        # 直近20日の上昇日/下落日出来高比
+        ret_20 = close.iloc[-20:].pct_change().fillna(0)
+        volumes_20 = vol.iloc[-20:]
+        up_days   = volumes_20[ret_20 > 0]
+        down_days = volumes_20[ret_20 <= 0]
+        up_vol_avg   = up_days.mean()   if len(up_days)   > 0 else 0
+        down_vol_avg = down_days.mean() if len(down_days) > 0 else 1
+
+        up_down_ratio = up_vol_avg / down_vol_avg if down_vol_avg > 0 else 1.0
+
+        if up_down_ratio >= 1.5:
+            score += 10; quality_flags.append(f"上昇日の出来高が下落日の {up_down_ratio:.1f}倍 — 需給改善")
+            up_vol_strength = "strong"
+        elif up_down_ratio >= 1.1:
+            score +=  5; quality_flags.append("上昇日の出来高が下落日をやや上回る")
+            up_vol_strength = "moderate"
+        elif up_down_ratio < 0.8:
+            score -=  8; risk_flags.append(f"下落日の出来高が上昇日の {1/up_down_ratio:.1f}倍 — 需給悪化")
+            up_vol_strength = "weak"
+        else:
+            up_vol_strength = "neutral"
+
+        # 直近出来高倍率スコア
+        if volume_ratio_20d is not None:
+            if volume_ratio_20d >= 2.0:
+                score += 8; quality_flags.append(f"直近出来高が20日平均の {volume_ratio_20d:.1f}倍（強い資金流入）")
+            elif volume_ratio_20d >= 1.3:
+                score += 4
+            elif volume_ratio_20d < 0.6:
+                score -= 4; risk_flags.append(f"直近出来高が低調 ({volume_ratio_20d:.1f}x) — 市場の関心が薄れている")
+
+        # 出来高トレンド（直近10日 vs 11〜20日前）
+        vol_recent  = vol.iloc[-10:].mean()
+        vol_earlier = vol.iloc[-20:-10].mean()
+        if vol_earlier > 0:
+            vol_trend_chg = (vol_recent / vol_earlier - 1) * 100
+            if vol_trend_chg >= 20:
+                score += 5; quality_flags.append(f"出来高が増加トレンド（直近10日平均が前期比 +{vol_trend_chg:.0f}%）")
+            elif vol_trend_chg <= -20:
+                score -= 4; risk_flags.append(f"出来高が減少トレンド（直近10日平均が前期比 {vol_trend_chg:.0f}%）")
+
+    score = max(0, min(100, score))
+
+    # ── ステータス ─────────────────────────────────────
+    if score >= 68:
+        status = "strong";  status_ja = "需給は良好"
+    elif score >= 42:
+        status = "neutral"; status_ja = "需給は中立"
+    else:
+        status = "weak";    status_ja = "需給に懸念あり"
+
+    # ── コメント ───────────────────────────────────────
+    parts = []
+    if inst_support == "strong":
+        parts.append("機関投資家の強いサポートがある")
+    if squeeze_potential in ("high", "medium"):
+        parts.append("空売り圧力による踏み上げ余地がある")
+    if insider_bias == "buying":
+        parts.append("インサイダーの買いが優勢")
+    if up_vol_strength == "strong":
+        parts.append("出来高を伴った上昇で需給改善")
+    if insider_bias == "selling":
+        parts.append("ただしインサイダーの売りに注意")
+    if up_vol_strength == "weak":
+        parts.append("出来高面では需給が弱い")
+    comment = "、".join(parts) + "。" if parts else "総合的に判断可能なデータが限られています。"
+
+    return {
+        "supply_demand_score":        score,
+        "supply_demand_status":       status,
+        "summary_label_ja":           status_ja,
+        "institutional_ownership_pct": inst_pct,
+        "institutional_support":      inst_support,
+        "short_float_pct":            short_pct,
+        "days_to_cover":              dtc,
+        "short_squeeze_potential":    squeeze_potential,
+        "insider_bias":               insider_bias,
+        "insider_bias_label_ja":      insider_bias_ja,
+        "volume_ratio_20d":           volume_ratio_20d,
+        "up_volume_strength":         up_vol_strength,
+        "quality_flags":              quality_flags,
+        "risk_flags":                 risk_flags,
+        "comment":                    comment,
+        "_hist":                      hist,
+        "_insider_df":                insider_df,
+    }
+
+
 def create_recommendation_pie_chart(recs_summary: pd.DataFrame):
     """アナリストの推奨レーティング構成をパイチャートで表示。"""
     if recs_summary is None or recs_summary.empty:
@@ -3510,8 +3746,8 @@ def render_stock_analyzer():
             st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
             
             # ─── タブ切り替え ───
-            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_risk, tab_ai, tab_cio = st.tabs(
-                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
+            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_sd, tab_risk, tab_ai, tab_cio = st.tabs(
+                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "⚖️ 需給分析", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
             )
 
             # 1. 基本情報
@@ -4471,6 +4707,205 @@ def render_stock_analyzer():
                     st.plotly_chart(fig_eq_bar, use_container_width=True)
                 else:
                     st.info("四半期チャートの生成に必要なデータが不足しています。")
+
+            # ⚖️ 需給分析タブ
+            with tab_sd:
+                st.divider()
+                st.markdown('<div class="section-title">⚖️ 需給分析 (Supply / Demand)</div>', unsafe_allow_html=True)
+                st.caption("機関保有・空売り・インサイダー・出来高の4軸から資金の流れと需給バランスを評価します。")
+
+                with st.spinner("需給データを解析中..."):
+                    sd_raw = fetch_supply_demand_extended(ticker)
+                    sd = calculate_supply_demand_score(sd_raw)
+
+                sd_score  = sd.get("supply_demand_score", 0)
+                sd_status = sd.get("supply_demand_status", "neutral")
+                sd_label  = sd.get("summary_label_ja", "—")
+                sd_comment= sd.get("comment", "")
+
+                status_cfg_sd = {
+                    "strong":  ("💪 良好",   "#10b981", "rgba(16,185,129,0.15)"),
+                    "neutral": ("⚖️ 中立",   "#f59e0b", "rgba(245,158,11,0.15)"),
+                    "weak":    ("📉 要注意", "#ef4444", "rgba(239,68,68,0.15)"),
+                }
+                sd_icon, sd_color, sd_bg = status_cfg_sd.get(sd_status, status_cfg_sd["neutral"])
+
+                # ── スコアゲージ & 総合ステータス ────────────────────
+                col_sd1, col_sd2 = st.columns([1, 2])
+
+                with col_sd1:
+                    fig_sd_gauge = go.Figure(go.Pie(
+                        values=[sd_score, 100 - sd_score],
+                        hole=0.72,
+                        marker_colors=[sd_color, "rgba(255,255,255,0.05)"],
+                        textinfo="none", sort=False,
+                    ))
+                    fig_sd_gauge.add_annotation(
+                        text=f"<b>{sd_score}</b>",
+                        x=0.5, y=0.55, font=dict(size=36, color=sd_color), showarrow=False
+                    )
+                    fig_sd_gauge.add_annotation(
+                        text="SD Score", x=0.5, y=0.38,
+                        font=dict(size=12, color="#94a3b8"), showarrow=False
+                    )
+                    fig_sd_gauge.update_layout(
+                        **{**PLOTLY_LAYOUT, "margin": dict(l=0, r=0, t=10, b=0)},
+                        showlegend=False, height=220,
+                    )
+                    st.plotly_chart(fig_sd_gauge, use_container_width=True)
+
+                with col_sd2:
+                    st.markdown(
+                        f'<div style="background:{sd_bg}; border-left:6px solid {sd_color}; '
+                        f'border-radius:12px; padding:18px 20px;">'
+                        f'<div style="font-size:0.8rem; color:#94a3b8;">需給総合評価</div>'
+                        f'<div style="font-size:1.5rem; font-weight:900; color:{sd_color};">'
+                        f'{sd_icon} {sd_label}</div></div>',
+                        unsafe_allow_html=True
+                    )
+                    st.markdown(f'<div class="ai-report" style="margin-top:10px;">{sd_comment}</div>',
+                                unsafe_allow_html=True)
+
+                # ── 主要指標: 3列 ──────────────────────────────────
+                st.divider()
+                st.markdown("#### 📊 主要需給指標")
+                sdm1, sdm2, sdm3 = st.columns(3)
+
+                with sdm1:
+                    inst_pct = sd.get("institutional_ownership_pct")
+                    inst_sup = sd.get("institutional_support", "unknown")
+                    sup_map  = {"strong": "💪高い", "moderate": "中程度", "low": "低め", "weak": "⚠️低い", "unknown": "—"}
+                    st.metric("機関保有比率", f"{inst_pct:.1f}%" if inst_pct is not None else "—",
+                              delta=sup_map.get(inst_sup, "—"), help="機関投資家が保有している浮動株の割合")
+
+                with sdm2:
+                    short_pct = sd.get("short_float_pct")
+                    dtc       = sd.get("days_to_cover")
+                    sq_label  = {"high": "🔥踏上余地大", "medium": "踏上余地あり",
+                                 "low": "踏上余地小", "minimal": "ほぼなし", "unknown": "—"}
+                    st.metric("空売り比率 (Float)", f"{short_pct:.1f}%" if short_pct is not None else "—",
+                              delta=sq_label.get(sd.get("short_squeeze_potential", "unknown"), "—"),
+                              help="浮動株に対する空売り割合")
+                    if dtc is not None:
+                        st.caption(f"Days to Cover: **{dtc:.1f}日**")
+
+                with sdm3:
+                    insider_ja = sd.get("insider_bias_label_ja", "—")
+                    insider_b  = sd.get("insider_bias", "neutral")
+                    ins_color  = {"buying": "#10b981", "selling": "#ef4444",
+                                  "mixed": "#f59e0b", "neutral": "#94a3b8"}.get(insider_b, "#94a3b8")
+                    st.markdown(
+                        f'<div style="text-align:center; padding:8px;">'
+                        f'<div style="font-size:0.8rem; color:#94a3b8;">インサイダー動向（直近3ヶ月）</div>'
+                        f'<div style="font-size:1.1rem; font-weight:700; color:{ins_color}; margin-top:6px;">'
+                        f'{insider_ja}</div></div>',
+                        unsafe_allow_html=True
+                    )
+
+                # ── 出来高指標 ─────────────────────────────────────
+                st.divider()
+                st.markdown("#### 📦 出来高・資金流")
+                vm1, vm2, vm3 = st.columns(3)
+
+                with vm1:
+                    vr20 = sd.get("volume_ratio_20d")
+                    vr_col = "#10b981" if (vr20 is not None and vr20 >= 1.3) else ("#ef4444" if (vr20 is not None and vr20 < 0.7) else "#f59e0b")
+                    st.metric("直近出来高倍率 (20日MA比)", f"{vr20:.1f}x" if vr20 is not None else "—",
+                              help="直近の出来高が20日平均の何倍か")
+
+                with vm2:
+                    up_vol = sd.get("up_volume_strength", "unknown")
+                    uv_label = {"strong": "💪 上昇日優勢", "moderate": "やや上昇優勢",
+                                "neutral": "拮抗", "weak": "⚠️ 下落日優勢", "unknown": "—"}
+                    uv_color = {"strong": "#10b981", "moderate": "#34d399", "neutral": "#94a3b8",
+                                "weak": "#ef4444", "unknown": "#64748b"}.get(up_vol, "#94a3b8")
+                    st.markdown(
+                        f'<div style="text-align:center; padding:8px;">'
+                        f'<div style="font-size:0.8rem; color:#94a3b8;">上昇日 vs 下落日 出来高</div>'
+                        f'<div style="font-size:1.1rem; font-weight:700; color:{uv_color}; margin-top:6px;">'
+                        f'{uv_label.get(up_vol, "—")}</div></div>',
+                        unsafe_allow_html=True
+                    )
+
+                with vm3:
+                    avg_10d = sd_raw.get("avg_volume_10d")
+                    avg_3m  = sd_raw.get("avg_volume_3m")
+                    if avg_10d and avg_3m and avg_3m > 0:
+                        short_term_vs_avg = avg_10d / avg_3m
+                        trend_label = "増加傾向 📈" if short_term_vs_avg >= 1.1 else ("減少傾向 📉" if short_term_vs_avg <= 0.9 else "横ばい")
+                        st.metric("出来高トレンド (10日/3ヶ月平均)", f"{short_term_vs_avg:.2f}x", delta=trend_label)
+                    else:
+                        st.metric("出来高トレンド", "—")
+
+                # ── 強み / 懸念フラグ ─────────────────────────────
+                st.divider()
+                col_sdqf, col_sdrf = st.columns(2)
+
+                with col_sdqf:
+                    st.markdown("#### ✅ 需給好転ポイント")
+                    qf = sd.get("quality_flags", [])
+                    if qf:
+                        for f in qf:
+                            st.markdown(f"- {f}")
+                    else:
+                        st.caption("好転フラグなし")
+
+                with col_sdrf:
+                    st.markdown("#### ⚠️ 需給懸念ポイント")
+                    rf = sd.get("risk_flags", [])
+                    if rf:
+                        for f in rf:
+                            st.markdown(f"- {f}")
+                    else:
+                        st.caption("懸念フラグなし")
+
+                # ── 出来高付き日足チャート ──────────────────────────
+                st.divider()
+                st.markdown("#### 📈 出来高付き日足チャート（直近1年）")
+                _sd_hist = sd.get("_hist", pd.DataFrame())
+                if not _sd_hist.empty and len(_sd_hist) >= 20:
+                    vol_ma_line = _sd_hist["Volume"].rolling(20).mean()
+                    fig_sd_vol = make_subplots(
+                        rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.65, 0.35], vertical_spacing=0.04,
+                    )
+                    # 上段: ローソク足
+                    fig_sd_vol.add_trace(go.Candlestick(
+                        x=_sd_hist.index, open=_sd_hist["Open"], high=_sd_hist["High"],
+                        low=_sd_hist["Low"], close=_sd_hist["Close"], name="株価"
+                    ), row=1, col=1)
+                    # 下段: 出来高バー
+                    colors_vol = [
+                        "#10b981" if c >= o else "#ef4444"
+                        for c, o in zip(_sd_hist["Close"], _sd_hist["Open"])
+                    ]
+                    fig_sd_vol.add_trace(go.Bar(
+                        x=_sd_hist.index, y=_sd_hist["Volume"],
+                        name="出来高", marker_color=colors_vol, opacity=0.7
+                    ), row=2, col=1)
+                    # 20日平均出来高ライン
+                    fig_sd_vol.add_trace(go.Scatter(
+                        x=_sd_hist.index, y=vol_ma_line,
+                        name="出来高20日MA", line=dict(color="#f59e0b", width=1.5, dash="dot")
+                    ), row=2, col=1)
+                    fig_sd_vol.update_layout(
+                        **{**PLOTLY_LAYOUT, "height": 500, "xaxis_rangeslider_visible": False,
+                           "title": f"{ticker} 株価・出来高（直近1年）"},
+                    )
+                    st.plotly_chart(fig_sd_vol, use_container_width=True)
+                else:
+                    st.info("出来高チャートの生成に必要なデータが不足しています。")
+
+                # ── インサイダー売買テーブル ────────────────────────
+                _insider_df = sd.get("_insider_df", pd.DataFrame())
+                if _insider_df is not None and not _insider_df.empty:
+                    st.divider()
+                    st.markdown("#### 👤 インサイダー売買（直近）")
+                    show_cols = [c for c in ["Date", "Insider", "Position", "Side", "Shares", "Value"] if c in _insider_df.columns]
+                    disp_df = _insider_df[show_cols].head(10).copy()
+                    if "Value" in disp_df.columns:
+                        disp_df["Value"] = disp_df["Value"].apply(lambda x: f"${x:,.0f}" if pd.notna(x) else "—")
+                    st.dataframe(disp_df, use_container_width=True)
 
             # 7. リスク・予想
             with tab_risk:
