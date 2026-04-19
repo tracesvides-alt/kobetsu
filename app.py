@@ -5115,6 +5115,22 @@ def render_trading_decision_summary(ticker: str, data: dict):
     except Exception as e:
         pass
 
+def get_analysis_style_mode() -> str:
+    """
+    中長期モード/短期モード の表示切替用UIを生成し、選択されたモードを返す。
+    """
+    import streamlit as st
+    st.markdown("<div style='margin-bottom: 5px;'></div>", unsafe_allow_html=True)
+    mode = st.radio(
+        "⏱️ 分析スタイル",
+        options=["中長期モード", "短期モード"],
+        index=0,
+        horizontal=True,
+        help="中長期: ファンダメンタルズやトレンド分析を含むフル機能です。\n短期: 短期トレード向けの機能を今後拡張していくモードです。"
+    )
+    st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
+    return mode
+
 def get_analysis_display_mode() -> str:
     """
     かんたんモード/詳細モード の表示切替用UIを生成し、選択されたモードを返す。
@@ -5158,28 +5174,36 @@ def render_stock_analyzer():
             st.markdown(f'<div class="company-name">{data["name"]} ({ticker})</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
             
-            # 最上部サマリーカード帯
-            render_top_summary_cards(ticker, data)
+            # --- 分析スタイル切替 ---
+            style_mode = get_analysis_style_mode()
             
-            # ─── タブ切り替え ───
-            # ─── タブ切り替え ───
-            display_mode = get_analysis_display_mode()
-            
-            # 売買判断サマリーの表示
-            render_trading_decision_summary(ticker, data)
-
             tab_basic = tab_fund = tab_chart = tab_peers = tab_canslim = tab_sepa = tab_weinstein = tab_rs = tab_entry = tab_earnings = tab_sd = tab_val = tab_scenario = tab_event = tab_risk = tab_cio = tab_playbook = tab_ai_final = None
 
-            if display_mode == "かんたんモード":
-                tabs = st.tabs([
-                    "📊 基本情報", "🔍 チャート", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🎯 CIO判断", "✅ AIジャッジ"
-                ])
-                tab_basic, tab_chart, tab_weinstein, tab_rs, tab_entry, tab_cio, tab_ai_final = tabs
+            if style_mode == "中長期モード":
+                # 最上部サマリーカード帯
+                render_top_summary_cards(ticker, data)
+                
+                # ─── タブ切り替え ───
+                display_mode = get_analysis_display_mode()
+                
+                # 売買判断サマリーの表示
+                render_trading_decision_summary(ticker, data)
+
+                if display_mode == "かんたんモード":
+                    tabs = st.tabs([
+                        "📊 基本情報", "🔍 チャート", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🎯 CIO判断", "✅ AIジャッジ"
+                    ])
+                    tab_basic, tab_chart, tab_weinstein, tab_rs, tab_entry, tab_cio, tab_ai_final = tabs
+                else:
+                    tabs = st.tabs([
+                        "📊 基本情報", "🔍 チャート", "📈 財務/バリュ", "🏢 競合比較", "📈 ステージ分析", "🏆 SEPA分析", "⚡ RS分析", "⏱ エントリー判定", "🎲 シナリオ分析", "🗂️ 銘柄タイプ", "🧾 決算品質", "⚖️ 需給分析", "📏 バリュエーション帯", "📅 イベントリスク", "🛡️ リスク/予想", "💰 CAN SLIM", "🎯 CIO判断", "✅ AIジャッジ"
+                    ])
+                    (tab_basic, tab_chart, tab_fund, tab_peers, tab_weinstein, tab_sepa, tab_rs, tab_entry, tab_scenario, tab_playbook, tab_earnings, tab_sd, tab_val, tab_event, tab_risk, tab_canslim, tab_cio, tab_ai_final) = tabs
             else:
-                tabs = st.tabs([
-                    "📊 基本情報", "🔍 チャート", "📈 財務/バリュ", "🏢 競合比較", "📈 ステージ分析", "🏆 SEPA分析", "⚡ RS分析", "⏱ エントリー判定", "🎲 シナリオ分析", "🗂️ 銘柄タイプ", "🧾 決算品質", "⚖️ 需給分析", "📏 バリュエーション帯", "📅 イベントリスク", "🛡️ リスク/予想", "💰 CAN SLIM", "🎯 CIO判断", "✅ AIジャッジ"
-                ])
-                (tab_basic, tab_chart, tab_fund, tab_peers, tab_weinstein, tab_sepa, tab_rs, tab_entry, tab_scenario, tab_playbook, tab_earnings, tab_sd, tab_val, tab_event, tab_risk, tab_canslim, tab_cio, tab_ai_final) = tabs
+                # 短期モード
+                st.info("💡 短期分析モードは現在開発向け土台です。今後、出来高・VWAP・短期モメンタムなどの機能を追加予定です。")
+                tabs = st.tabs(["📊 基本情報", "🔍 チャート"])
+                tab_basic, tab_chart = tabs
 
             # 1. 基本情報
             if tab_basic:
