@@ -5115,6 +5115,79 @@ def render_trading_decision_summary(ticker: str, data: dict):
     except Exception as e:
         pass
 
+def calculate_short_term_snapshot(ticker: str, data: dict) -> dict:
+    """短期モード用の重要指標を計算して返す"""
+    res = {
+        "price": data.get("price"),
+        "chg_pct": None,
+        "high_dist": None,
+        "vol_ratio": None,
+        "trend": "—",
+        "judgment": "未実装"
+    }
+    
+    # 前日比%
+    P = data.get("price")
+    prev_P = data.get("prev_close")
+    if P and prev_P and prev_P > 0:
+        res["chg_pct"] = (P / prev_P - 1) * 100
+        
+    # 高値からの距離
+    h52 = data.get("fifty_two_week_high")
+    if P and h52 and h52 > 0:
+        res["high_dist"] = (P / h52 - 1) * 100
+        
+    # 直近出来高倍率 (10日平均 / 3ヶ月平均)
+    v10 = data.get("avg_vol_10d")
+    v3m = data.get("avg_vol_3m")
+    if v10 and v3m and v3m > 0:
+        res["vol_ratio"] = v10 / v3m
+        
+    # 短期トレンド (既存のキャッシュ済み日足履歴を流用して 20日SMA と比較)
+    hist = fetch_price_history(ticker, "6mo")
+    if hist is not None and not hist.empty and len(hist) >= 20:
+        try:
+            sma20 = hist["Close"].rolling(window=20).mean().iloc[-1]
+            current = hist["Close"].iloc[-1]
+            # 簡易判定
+            if current > sma20 * 1.015:
+                res["trend"] = "上向き ↗"
+            elif current < sma20 * 0.985:
+                res["trend"] = "下向き ↘"
+            else:
+                res["trend"] = "横ばい →"
+        except Exception:
+            pass
+            
+    return res
+
+def render_short_term_summary_cards(ticker: str, data: dict):
+    """短期モード用の横並びサマリーカードを描画する"""
+    import streamlit as st
+    
+    with st.spinner("短期スナップショットを取得中..."):
+        snap = calculate_short_term_snapshot(ticker, data)
+        
+    st.markdown("<div style='padding: 12px; background: rgba(255,255,255,0.03); border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>", unsafe_allow_html=True)
+    cols = st.columns(6)
+    
+    p_str = f"${snap['price']:.2f}" if snap['price'] else "—"
+    cols[0].metric("現在値", p_str)
+    
+    chg_str = f"{snap['chg_pct']:+.2f}%" if snap['chg_pct'] is not None else "—"
+    cols[1].metric("前日比", chg_str)
+    
+    hd_str = f"{snap['high_dist']:+.1f}%" if snap['high_dist'] is not None else "—"
+    cols[2].metric("高値距離", hd_str)
+    
+    vr_str = f"{snap['vol_ratio']:.2f}x" if snap['vol_ratio'] is not None else "—"
+    cols[3].metric("出来高倍率", vr_str)
+    
+    cols[4].metric("短期トレンド", snap['trend'])
+    cols[5].metric("短期判定(仮)", snap['judgment'])
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+
 def get_analysis_style_mode() -> str:
     """
     中長期モード/短期モード の表示切替用UIを生成し、選択されたモードを返す。
@@ -5200,6 +5273,9 @@ def render_stock_analyzer():
                     ])
                     (tab_basic, tab_chart, tab_fund, tab_peers, tab_weinstein, tab_sepa, tab_rs, tab_entry, tab_scenario, tab_playbook, tab_earnings, tab_sd, tab_val, tab_event, tab_risk, tab_canslim, tab_cio, tab_ai_final) = tabs
             else:
+                # 短期サマリーカード追加
+                render_short_term_summary_cards(ticker, data)
+
                 # 短期モード
                 st.info("💡 短期分析モードは現在開発向け土台です。今後、出来高・VWAP・短期モメンタムなどの機能を追加予定です。")
                 tabs = st.tabs(["📊 基本情報", "🔍 チャート"])
