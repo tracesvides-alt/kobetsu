@@ -4473,6 +4473,75 @@ def create_fcf_chart(dates, fcf_values):
     return fig
 
 
+def create_short_term_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
+    """短期モード用のテクニカルチャート（ローソク足＋5/10/20日線＋出来高）を作成する。"""
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+    import pandas as pd
+    
+    df_plot = df.copy()
+    # 欠損日（土日等）を詰めるために日付を文字列として扱う
+    if pd.api.types.is_datetime64_any_dtype(df_plot['Date']):
+        df_plot['Date_str'] = df_plot['Date'].dt.strftime('%Y-%m-%d')
+    else:
+        df_plot['Date_str'] = df_plot['Date'].astype(str)
+
+    # MAの計算
+    if "MA5" not in df_plot.columns: df_plot["MA5"] = df_plot["Close"].rolling(window=5).mean()
+    if "MA10" not in df_plot.columns: df_plot["MA10"] = df_plot["Close"].rolling(window=10).mean()
+    if "MA20" not in df_plot.columns:  df_plot["MA20"] = df_plot["Close"].rolling(window=20).mean()
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.04,
+        row_heights=[0.75, 0.25],
+        subplot_titles=(f"{ticker} 短期トレンドチャート (Short-Term Price Action)", "出来高 (Volume)"),
+    )
+    
+    # 上段: ローソク足
+    fig.add_trace(
+        go.Candlestick(
+            x=df_plot["Date_str"],
+            open=df_plot["Open"], high=df_plot["High"],
+            low=df_plot["Low"], close=df_plot["Close"],
+            name="価格",
+            increasing_line_color="#10b981", # 陽線（緑）
+            decreasing_line_color="#ef4444", # 陰線（赤）
+        ),
+        row=1, col=1
+    )
+    
+    # 上段: 移動平均線
+    lines = [("MA5", "#38bdf8", "MA 5"), ("MA10", "#facc15", "MA 10"), ("MA20", "#f472b6", "MA 20")]
+    for col, color, name in lines:
+        sub_df = df_plot.dropna(subset=[col])
+        if not sub_df.empty:
+            fig.add_trace(
+                go.Scatter(x=sub_df["Date_str"], y=sub_df[col], name=name, line=dict(color=color, width=1.5), hoverinfo="skip"),
+                row=1, col=1
+            )
+            
+    # 下段: 出来高
+    colors = ["#ef4444" if row['Close'] < row['Open'] else "#10b981" for _, row in df_plot.iterrows()]
+    fig.add_trace(
+        go.Bar(x=df_plot["Date_str"], y=df_plot["Volume"], name="出来高", marker_color=colors),
+        row=2, col=1
+    )
+    
+    fig.update_layout(
+        **{**PLOTLY_LAYOUT, "legend": dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)},
+        height=600,
+        showlegend=True,
+        xaxis_rangeslider_visible=False,
+    )
+    
+    # X軸の表示設定（非営業日の隙間を潰す）
+    fig.update_xaxes(type='category', categoryorder='category ascending', nticks=15)
+    
+    return fig
+
+
 def create_technical_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
     """株価 + SMA + RSI のテクニカルチャートを make_subplots で作成。"""
     fig = make_subplots(
@@ -5480,10 +5549,17 @@ def render_stock_analyzer():
             if tab_chart:
                 with tab_chart:
                     st.divider()
-                    period = st.selectbox("期間", ["1ヶ月", "6ヶ月", "1年", "5年"], index=2)
-                    hist = fetch_price_history(ticker, PERIOD_MAP[period])
-                    if hist is not None:
-                        st.plotly_chart(create_technical_chart(hist, ticker), use_container_width=True)
+                    if style_mode == "短期モード":
+                        st.markdown("### 📊 短期テクニカルチャート")
+                        # 短期用の描画（直近6ヶ月をデフォルトとして使用）
+                        short_hist = fetch_price_history(ticker, "6mo")
+                        if short_hist is not None:
+                            st.plotly_chart(create_short_term_chart(short_hist, ticker), use_container_width=True)
+                    else:
+                        period = st.selectbox("期間", ["1ヶ月", "6ヶ月", "1年", "5年"], index=2)
+                        hist = fetch_price_history(ticker, PERIOD_MAP[period])
+                        if hist is not None:
+                            st.plotly_chart(create_technical_chart(hist, ticker), use_container_width=True)
     
             # 4. 競合比較
             if tab_peers:
