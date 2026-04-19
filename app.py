@@ -791,6 +791,90 @@ def generate_ai_swot(data: dict) -> dict:
         return None
 
 
+
+
+@st.cache_data(ttl=86400)
+def generate_ai_final_verdict(ticker: str, data: dict, cio_inputs: dict, final_judge: dict) -> dict:
+    """CIO 7軸スコアを入力とし、AIによる最終ジャッジを定型フォーマットで生成する。"""
+    if not GENAI_AVAILABLE:
+        return None
+
+    try:
+        # 必要なデータを抽出
+        total_score = cio_inputs.get("total_score", "N/A")
+        scores = cio_inputs.get("scores", {})
+        verdict_ja = final_judge.get("verdict_ja", "N/A")
+        verdict_desc = final_judge.get("verdict_desc", "")
+
+        prompt = f"""
+あなたは米国株のシニア・ポートフォリオマネージャーです。
+以下の構造化された分析データ（7軸の統合スコアおよびルールベースの判定）に基づき、
+最終的な投資判断を厳密に構造化データ形式（JSON）で出力してください。
+
+【対象銘柄】
+- ティッカー: {ticker}
+- 企業名: {data.get("name", "N/A")}
+- セクター/産業: {data.get("sector", "N/A")} / {data.get("industry", "N/A")}
+
+【CIO 7軸総合評価】
+- 総合スコア: {total_score} / 100
+- 主な強み: {", ".join(final_judge.get('strengths', ['なし']))}
+- 主なリスク: {", ".join(final_judge.get('risks', ['なし']))}
+- トレンド: {scores.get('trend_score')} / 100
+- エントリー: {scores.get('entry_score')} / 100
+- 相対強度: {scores.get('rs_score')} / 100
+- 決算品質: {scores.get('earnings_score')} / 100
+- 需給: {scores.get('supply_demand_score')} / 100
+- バリュエーション: {scores.get('valuation_score')} / 100
+- イベント安全性: {scores.get('event_safety_score')} / 100
+
+これらのデータを総合的に解釈し、最終ジャッジを下してください。
+必ず以下のJSONフォーマットで出力すること。キーの名前や階層は変更しないこと。
+あなたの意見や推測をJSONの外のテキストとして含めてはいけません（JSONのみを返すこと）。
+
+{{
+    "final_verdict": "buy | buy_on_pullback | monitor | pass のいずれか1つ",
+    "final_verdict_label_ja": "買い | 押し目なら買い | 監視継続 | 見送り のいずれか1つ",
+    "buy_now": "true または false (boolean)",
+    "confidence_level": "high | medium | low のいずれか1つ",
+    "confidence_label_ja": "高確信 | 中確信 | 低確信 のいずれか1つ",
+    "one_line_summary": "最終判断を一言で表す1行要約",
+    "top_reasons": [
+        "最大の判断理由1",
+        "最大の判断理由2",
+        "最大の判断理由3"
+    ],
+    "top_risks": [
+        "最大のリスク1",
+        "最大のリスク2"
+    ],
+    "best_entry_condition": "具体的なベストエントリー条件（例: 20日線反発確認など。箇条書きではなく一文で）",
+    "invalidation_condition": "撤退・シナリオ無効化条件（例: 50日線明確割れなど。箇条書きではなく一文で）",
+    "investor_type_fit": "どのような投資スタイルに向いているか（例: 押し目継続型、モメンタム追及型）",
+    "action_plan": [
+        "具体的なアクション1",
+        "具体的なアクション2",
+        "具体的なアクション3"
+    ],
+    "full_commentary": "各軸のスコアを踏まえ、なぜその判断に至ったかを論理的に解説するコメント（200〜300文字程度）"
+}}
+"""
+        response = AI_CLIENT.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=prompt,
+        )
+        # JSON部分を抽出
+        text = response.text
+        start_idx = text.find("{")
+        end_idx = text.rfind("}")
+        if start_idx != -1 and end_idx != -1:
+            clean_json = text[start_idx:end_idx+1]
+            return json.loads(clean_json)
+        return None
+    except Exception as e:
+        print(f"AI Final Verdict Error: {e}")
+        return None
+
 @st.cache_data(ttl=86400)
 def get_translated_summary(summary_text: str) -> str:
     """事業概要をAIなしで安定して日本語に翻訳する。"""
@@ -4628,8 +4712,8 @@ def render_stock_analyzer():
             st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
             
             # ─── タブ切り替え ───
-            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_sd, tab_val, tab_event, tab_risk, tab_ai, tab_cio = st.tabs(
-                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "⚖️ 需給分析", "📏 バリュエーション帯", "📅 イベントリスク", "🛡️ リスク/予想", "🤖 AI分析", "🎯 CIO判断"]
+            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_sd, tab_val, tab_event, tab_risk, tab_cio, tab_ai_final = st.tabs(
+                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "⚖️ 需給分析", "📏 バリュエーション帯", "📅 イベントリスク", "🛡️ リスク/予想", "🎯 CIO判断", "✅ AIジャッジ"]
             )
 
             # 1. 基本情報
@@ -6205,52 +6289,7 @@ def render_stock_analyzer():
                     else:
                         st.info("直近のインサイダー取引データがありません。")
     
-            # 8. AI分析
-            with tab_ai:
-                st.divider()
-                st.markdown('<div class="section-title">🤖 Gemini AI 統合分析レポート</div>', unsafe_allow_html=True)
-                
-                st.info("""
-                **分析の根拠となるデータ項目:**
-                1. **財務の質** (ROE/ROIC, キャッシュフローの健全性)
-                2. **長期成長トレンド** (売上高・純利益の推移)
-                3. **理論株価** (DCF分析による妥当価格との乖離)
-                4. **競合比較ランキング** (セクター内での相対的な位置付け)
-                5. **プロの視点** (アナリストの目標株価・推奨度)
-                6. **内部関係者の動き** (インサイダー取引の履歴)
-                7. **テクニカル** (RSI・SMAトレンドの裏付け)
-                
-                これらの多角的なデータを最新の **Gemini 2.0 Flash** モデルが統合し、分析レポートを生成します。
-                """)
-                
-                # --- 成長ドライバ・カード (AVGO例) ---
-                if ticker == "AVGO":
-                    st.markdown("### 📈 主要成長ドライバ分析 (Summary)")
-                    avgo_drivers = [
-                        {"id": 1, "theme": "Custom AI Accelerator (XPU) の独占的拡大", "impact": "Google TPU v6/Meta MTIA等のカスタムASIC出荷が加速し、AI半導体売上は84.4億ドル（+106% YoY）を記録。主要CSPとの共同開発でMRVLに対し規模の経済で圧倒。", "status": "positive"},
-                        {"id": 2, "theme": "AIデータセンターのEthernet移行と帯域幅の飛躍", "impact": "1M GPU クラスター向けに 102.4T 帯域の Tomahawk 6 出荷開始。InfiniBandからEthernetへの主導権転換によりネットワーク事業が高成長。", "status": "positive"},
-                        {"id": 3, "theme": "接続コスト最適化としての DAC (銅線) 推進", "impact": "スケールアップ領域で光学部品コストを回避するDAC（直接接続銅線）戦略を強化。電力的・コスト的に競合に対し強力なマージン優位を確保。", "status": "positive"},
-                        {"id": 4, "theme": "ASIC市場の Broadcom/Marvell 二強体制の固定化", "impact": "最先端プロセス(3nm)での開発能力を持つ唯一の二社として寡占化が進展。特にAVGOは最高難度のハイパースケーラ案件を独占、シェア70%超を維持。", "status": "positive"},
-                        {"id": 5, "theme": "次世代光技術 CPO (Bailly) の先行商用化", "impact": "業界初の1.6T/3.2T対応CPO『Bailly』を投入。従来型比で消費電力を50%削減し、次世代AIインフラにおける電力密度の限界を打破。", "status": "positive"},
-                        {"id": 6, "theme": "VMware (VCF) サブスクリプション移行の成否", "impact": "VCF全社導入が進み利益率向上に寄与（EBITDAマージン68%）。一方、ライセンス体系変更による一部解約リスクは残るもののLTV向上は確実視。", "status": "neutral"},
-                        {"id": 7, "theme": "CoWoS および HBM 供給キャパシティの制約", "impact": "売上の約半数が先端パッケージング(CoWoS)とHBM供給に依存。バックログは増大しているが、サプライヤー側の生産能力が通期アップサイドの制限要因。", "status": "critical"}
-                    ]
-                    render_growth_driver_cards(avgo_drivers)
-                    st.write("<br>", unsafe_allow_html=True)
-                # ------------------------------------
-    
-                api_key = get_gemini_api_key()
-                if not api_key:
-                    api_key = st.text_input("Gemini API Key を入力してください", type="password")
-                
-                if api_key:
-                    prompt = build_analysis_prompt(ticker, data, fin=fetch_financials(ticker)[0], adv_fin=fetch_advanced_financials(ticker), analyst=fetch_analyst_data(ticker))
-                    if st.button("AI分析を実行", type="primary"):
-                        with st.spinner("AIがデータを解析中..."):
-                            report = call_gemini(api_key, SYSTEM_PROMPT, prompt)
-                            st.markdown(report)
-                else:
-                    st.warning("API Key が未設定です。")
+
     
             # 9. CIO 総合投資判断ダッシュボード（7軸統合）
             with tab_cio:
@@ -6437,6 +6476,87 @@ def render_stock_analyzer():
                     st.info("価格データが取得できなかったため、VCP分析を実行できませんでした。")
 
                 st.caption("⚠️ 本ダッシュボードは情報提供を目的としたものであり、特定の投資行動を推奨するものではありません。投資判断はご自身の責任でお願いいたします。")
+
+            # 10. AI最終ジャッジ
+            with tab_ai_final:
+                st.divider()
+                st.markdown('<div class="section-title">✅ AI 最終ジャッジ (Gemini 定型プロンプト出力)</div>', unsafe_allow_html=True)
+                st.caption("CIOダッシュボードの7軸の定量・定性結果をAIへ渡し、ぶれのない定型レイアウトで最終判断を生成します。")
+
+                if not GENAI_AVAILABLE:
+                    st.warning("⚠️ Gemini APIが無効または未設定です。設定を確認してください。")
+                else:
+                    api_key = get_gemini_api_key()
+                    if not api_key:
+                        st.info("Gemini API Key が未設定の場合は「🤖 AI分析」タブで設定してください。")
+                    else:
+                        if st.button("🚀 AI 最終ジャッジを生成", type="primary"):
+                            with st.spinner("AI が 全データとCIO評価を解析中..."):
+                                # CIOの入力と判定を取得 (すでにtab_cioでキャッシュされていれば早い)
+                                cio_inputs = build_cio_decision_inputs(ticker)
+                                final_judge_info = derive_final_judgment(cio_inputs, ticker, data)
+                                
+                                ai_verdict = generate_ai_final_verdict(ticker, data, cio_inputs, final_judge_info)
+                                
+                                if ai_verdict:
+                                    st.success("解析完了！")
+                                    # --- UI 描画 ---
+                                    # バナー表現
+                                    vd = ai_verdict.get("final_verdict", "monitor")
+                                    vd_ja = ai_verdict.get("final_verdict_label_ja", "監視")
+                                    sum_line = ai_verdict.get("one_line_summary", "")
+                                    conf_ja = ai_verdict.get("confidence_label_ja", "中確信")
+                                    
+                                    v_colors = {
+                                        "buy": ("#10b981", "rgba(16,185,129,0.1)"),
+                                        "buy_on_pullback": ("#34d399", "rgba(52,211,153,0.1)"),
+                                        "monitor": ("#3b82f6", "rgba(59,130,246,0.1)"),
+                                        "pass": ("#ef4444", "rgba(239,68,68,0.1)")
+                                    }
+                                    c_main, c_bg = v_colors.get(vd, v_colors["monitor"])
+                                    
+                                    st.markdown(f"""
+                                    <div style="background:{c_bg}; border-left:6px solid {c_main}; border-radius:8px; padding:20px; margin-bottom:20px;">
+                                        <div style="font-size:0.85rem; color:#94a3b8; margin-bottom:4px;">AI 統合ジャッジ - {conf_ja}</div>
+                                        <div style="color:{c_main}; font-size:2.2rem; font-weight:800; margin-bottom:10px;">{vd_ja}</div>
+                                        <div style="font-size:1.1rem; color:#e2e8f0; font-weight:500;">{sum_line}</div>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                    
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        st.markdown("#### ✅ 判断理由")
+                                        for rsn in ai_verdict.get("top_reasons", []):
+                                            st.markdown(f" - {rsn}")
+                                    with col2:
+                                        st.markdown("#### ⚠️ 最大のリスク")
+                                        for rsk in ai_verdict.get("top_risks", []):
+                                            st.markdown(f" - {rsk}")
+                                            
+                                    st.divider()
+                                    col3, col4 = st.columns(2)
+                                    with col3:
+                                        st.markdown("#### 🎯 ベストエントリー条件")
+                                        st.info(f"💡 {ai_verdict.get('best_entry_condition', '—')}")
+                                    with col4:
+                                        st.markdown("#### 🚫 無効化・損切り条件")
+                                        st.error(f"⚠️ {ai_verdict.get('invalidation_condition', '—')}")
+                                        
+                                    st.divider()
+                                    st.markdown("#### 📋 アクションプラン")
+                                    action_html = "".join([f"<li style='margin-bottom:8px;'>{act}</li>" for act in ai_verdict.get("action_plan", [])])
+                                    st.markdown(f"<ul style='color:#e2e8f0; font-size:1rem;'>{action_html}</ul>", unsafe_allow_html=True)
+                                    
+                                    st.divider()
+                                    st.markdown("#### 💬 フル・コメンタリー")
+                                    st.caption(f"推奨投資家タイプ: **{ai_verdict.get('investor_type_fit', '—')}**")
+                                    st.markdown(f"""
+                                    <div style="background:rgba(255,255,255,0.05); padding:16px; border-radius:8px; line-height:1.7;">
+                                        {ai_verdict.get("full_commentary", "—")}
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                else:
+                                    st.error("AIからのJSONレスポンスのパースに失敗しました。時間をおいて再実行してください。")
 
     else:
         st.info("👆 ティッカーシンボルを入力して分析を開始してください。")
