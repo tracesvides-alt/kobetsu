@@ -5304,6 +5304,12 @@ def calculate_short_term_snapshot(ticker: str, data: dict) -> dict:
             vwap_res = evaluate_short_term_vwap_gap(data)
             res["vwap_details"] = vwap_res
             # --------------------------------
+
+            # --- 短期セットアップ総合判定の呼び出し ---
+            setup_res = evaluate_short_term_setup(data, breakout_res, vwap_res, res["trend"])
+            res["setup_details"] = setup_res
+            res["judgment"] = setup_res.get("label", "不明")
+            # --------------------------------
         except Exception:
             pass
             
@@ -5363,6 +5369,77 @@ def evaluate_short_term_vwap_gap(data: dict) -> dict:
         
     return res
 
+def evaluate_short_term_setup(data: dict, breakout_res: dict, vwap_res: dict, trend_label: str) -> dict:
+    """短期ブレイク判定、VWAP、トレンドを統合して総合評価を行う"""
+    score = 0
+    reasons = []
+    
+    # 1. ブレイク要素 (最大30)
+    b_id = breakout_res.get("status_id")
+    if b_id == "breakout_candidate": score += 30; reasons.append("20日高値ブレイク成立中")
+    elif b_id == "breakout_approaching": score += 20; reasons.append("20日高値に接近・準備中")
+    elif b_id == "monitor": score += 10
+    
+    # 2. VWAP要素 (最大20)
+    v_id = vwap_res.get("status_id")
+    if v_id == "strong_today": score += 20; reasons.append("当日VWAPを鮮明に上抜け")
+    elif v_id == "gap_monitor": score += 10
+    elif v_id == "weak": score -= 20; reasons.append("当日VWAPを下回る弱気推移")
+    
+    # 3. トレンド/MA要素 (最大20)
+    if "上向き" in trend_label: score += 20; reasons.append("短期移動平均線が良好な並び")
+    elif "横ばい" in trend_label: score += 5
+    elif "下向き" in trend_label: score -= 20; reasons.append("短期トレンドが下向き")
+    
+    # 4. 出来高要素 (最大15)
+    vol_ratio = breakout_res.get("vol_ratio", 0)
+    if vol_ratio > 1.5: score += 15; reasons.append("出来高が極めて強い")
+    elif vol_ratio > 1.1: score += 10; reasons.append("出来高が平均を上回る")
+    
+    # 5. ギャップ維持 (最大15)
+    gap_pct = vwap_res.get("gap_pct", 0)
+    p_vs_v = vwap_res.get("price_vs_vwap_pct", 0)
+    if gap_pct > 1.0 and p_vs_v > 0.5: score += 15; reasons.append("ギャップアップ後の強さを維持")
+    
+    score = max(0, min(100, score))
+    
+    # ステータス決定
+    status_id = "monitor"
+    label = "監視 👁️"
+    action = "仕掛け条件を待機。現状は一部のシグナルが不足しています。"
+    risk = "直近安値やVWAP割れを撤退基準に設定。"
+    
+    if score >= 75:
+        status_id = "setup_candidate"
+        label = "仕掛け候補 🚀"
+        action = "短期的には絶好のセットアップ。出来高の維持を確認しつつエントリー検討。"
+        risk = "当日安値または20日移動平均線を最終防衛ラインに。"
+    elif score >= 55:
+        if "上向き" in trend_label and b_id == "breakout_candidate":
+             status_id = "buy_the_dip"
+             label = "押し待ち ⏳"
+             action = "トレンドは強いが当日は過熱気味。一段の押し目を待ってからの参入が有利。"
+             risk = "高値での飛び乗りによる「振るい落とし」に注意。"
+        else:
+             status_id = "monitor"
+             label = "監視 👁️"
+             action = "トレンドは悪くないが、爆発的なエネルギー待ちの状態。"
+    elif score < 35:
+        status_id = "pass"
+        label = "見送り ⚖️"
+        action = "短期的な優位性がなく、リスクが高い局面。他の銘柄を優先。"
+        risk = "底なしの下落やダラダラ下げに巻き込まれないよう注意。"
+        
+    return {
+        "status_id": status_id,
+        "label": label,
+        "score": score,
+        "reasons": reasons,
+        "action_hint": action,
+        "risk_hint": risk,
+        "trend_label": trend_label
+    }
+
 def render_short_term_summary_cards(ticker: str, data: dict, snap: dict = None):
     """短期モード用の横並びサマリーカードを描画する"""
     import streamlit as st
@@ -5390,6 +5467,48 @@ def render_short_term_summary_cards(ticker: str, data: dict, snap: dict = None):
     cols[5].metric("短期判定", snap['judgment'])
     
     st.markdown("</div>", unsafe_allow_html=True)
+
+def render_short_term_setup_panel(snap: dict):
+    """短期セットアップ総合判定の詳細パネルを表示する"""
+    import streamlit as st
+    if "setup_details" not in snap:
+        return
+        
+    det = snap["setup_details"]
+    
+    # 判定によって背景色を変更
+    bg_color = "rgba(16,185,129,0.05)" # 緑系 (仕掛け候補, 押し待ち)
+    border_color = "rgba(16,185,129,0.2)"
+    if det["status_id"] == "pass":
+        bg_color = "rgba(239,68,68,0.05)" # 赤系 (見送り)
+        border_color = "rgba(239,68,68,0.2)"
+    elif det["status_id"] == "monitor":
+        bg_color = "rgba(249,115,22,0.05)" # オレンジ系 (監視)
+        border_color = "rgba(249,115,22,0.2)"
+
+    st.markdown(f"""
+        <div style='padding: 20px; background: {bg_color}; border-radius: 12px; border: 2px solid {border_color}; margin-bottom: 24px;'>
+            <div style='display: flex; justify-content: space-between; align-items: center;'>
+                <div style='font-size: 1.5rem; font-weight: 700; color: #f8fafc;'>
+                    総合判定: <span style='color: #10b981;'>{det['label']}</span>
+                </div>
+                <div style='text-align: right;'>
+                    <div style='font-size: 0.8rem; color: #94a3b8;'>セットアップスコア</div>
+                    <div style='font-size: 2rem; font-weight: 800; color: #10b981;'>{det['score']}<span style='font-size: 1rem;'> pts</span></div>
+                </div>
+            </div>
+            <div style='margin-top: 15px; grid-template-columns: 1fr 1fr; display: grid; gap: 20px;'>
+                <div>
+                    <div style='font-size: 0.85rem; font-weight: 600; color: #94a3b8; margin-bottom: 5px;'>💡 アクション方針</div>
+                    <div style='font-size: 0.95rem; color: #e2e8f0;'>{det['action_hint']}</div>
+                </div>
+                <div>
+                    <div style='font-size: 0.85rem; font-weight: 600; color: #94a3b8; margin-bottom: 5px;'>⚠️ リスク管理</div>
+                    <div style='font-size: 0.95rem; color: #e2e8f0;'>{det['risk_hint']}</div>
+                </div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
 
 def render_short_term_breakout_panel(snap: dict):
     """短期ブレイク判定の詳細パネルを表示する"""
@@ -5524,11 +5643,17 @@ def render_stock_analyzer():
                 # 短期サマリーカード表示
                 render_short_term_summary_cards(ticker, data, snap=snap)
                 
-                # 短期ブレイク詳細表示
-                render_short_term_breakout_panel(snap)
+                # --- 短期総合判定 (最も重要なジャッジを最上部に) ---
+                render_short_term_setup_panel(snap)
                 
-                # 短期VWAP詳細表示
-                render_short_term_vwap_panel(snap)
+                # 判定の根拠を横並びで表示
+                col_left, col_right = st.columns(2)
+                with col_left:
+                     # 短期ブレイク詳細表示
+                     render_short_term_breakout_panel(snap)
+                with col_right:
+                     # 短期VWAP詳細表示
+                     render_short_term_vwap_panel(snap)
 
                 # 短期モード
                 st.info("💡 短期分析モードは現在開発向け土台です。今後、出来高・VWAP・短期モメンタムなどの機能を追加予定です。")
