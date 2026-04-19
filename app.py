@@ -3648,6 +3648,140 @@ def calculate_event_risk(er_data: dict) -> dict:
 # ─────────────────────────────────────────────
 
 @st.cache_data(ttl=1800)
+def determine_stock_playbook(ticker: str, cio_inputs: dict) -> dict:
+    """
+    CIO 7軸スコアなどの統合データをもとに、銘柄の最適な戦術（Playbook）を判定する。
+    """
+    scores = cio_inputs.get("scores", {})
+    total_score = cio_inputs.get("total_score", 50)
+    
+    trend = scores.get("trend_score", 50)
+    entry = scores.get("entry_score", 50)
+    rs_score = scores.get("rs_score", 50)
+    event_risk = scores.get("event_safety_score", 50)  # イベント安全性 (低いと危険, 0-100)
+    earn_score = scores.get("earnings_score", 50)
+    
+    pb_type = "avoid"
+    label_ja = "回避型"
+    reason = []
+    flags = []
+    
+    # 基本判定ロジック
+    if trend >= 65 and rs_score >= 55:
+        if entry >= 60:
+            pb_type = "breakout_initial"
+            label_ja = "初動ブレイク型"
+            reason.append("週足トレンドと相対強度(RS)が強気局面にある")
+            reason.append("日足レベルでも直近高値更新や良好なエントリー位置にある")
+            flags.extend(["順張り本命", "モメンタム強", "ブレイク追随"])
+        else:
+            pb_type = "pullback_continuation"
+            label_ja = "押し目継続型"
+            reason.append("週足トレンドは極めて良好だが、日足ではやや伸びきりか調整中")
+            reason.append("下値支持線での反発を待つ方がリスクリワードが良い")
+            flags.extend(["調整待ち優位", "移動平均線反発狙い"])
+    elif 45 <= trend < 65:
+        if rs_score >= 50 or earn_score >= 60:
+            pb_type = "early_monitor"
+            label_ja = "先回り監視型"
+            reason.append("週足ベースの底打ち・ベース形成が進行中")
+            reason.append("ファンダメンタルズやRSに改善の兆しがあるが、まだ明確なブレイクには至っていない")
+            flags.extend(["ベース形成中", "アラート待機", "打診買い検討"])
+        else:
+            pb_type = "avoid"
+            label_ja = "回避型"
+            reason.append("トレンドが中途半端で、特筆すべき強みが見当たらない")
+            flags.append("方向感欠如")
+    else:
+        pb_type = "avoid"
+        label_ja = "回避型"
+        reason.append("週足トレンドが下落局面（Stage3/4）、または全体として評価が低すぎる")
+        flags.extend(["売り圧力優位", "資金拘束リスク", "逆張り厳禁"])
+        
+    # イベント通過待ちオーバーライド
+    if event_risk < 45 and pb_type != "avoid":
+        secondary_type = pb_type
+        secondary_label = label_ja
+        pb_type = "event_wait"
+        label_ja = "イベント通過待ち型"
+        reason.insert(0, "銘柄本来のトレンドは良いが、直近の決算やマクロイベントなどの不確実性が高い")
+        flags.insert(0, "ボラティリティ警戒")
+    else:
+        secondary_type = None
+        secondary_label = None
+
+    # 行動指針のマッピング
+    actions = {
+        "breakout_initial": {
+            "best": "直近高値更新のブレイク確認でエントリー。または浅い押し目で乗る",
+            "avoid": "大きな押し目まで待ちすぎること、深い調整へのナンピン",
+            "trigger": "日足での大陽線＋出来高増、新高値更新",
+            "warning": "ブレイク直後からの陰線包み足や、出来高を伴う直近安値割れ",
+            "conf": "high" if total_score >= 65 else "medium",
+            "bg": "rgba(59,130,246,0.15)",
+            "border": "#3b82f6"
+        },
+        "pullback_continuation": {
+            "best": "20日線や50日線付近まで引き付け、反発を確認してからエントリー",
+            "avoid": "移動平均線から大きく上方乖離した位置での無計画な飛び乗り",
+            "trigger": "主要な移動平均線付近での下ヒゲや陽線反発",
+            "warning": "50日移動平均線を明確に下抜け、かつ数日回復できない場合",
+            "conf": "high" if total_score >= 60 else "medium",
+            "bg": "rgba(16,185,129,0.15)",
+            "border": "#10b981"
+        },
+        "early_monitor": {
+            "best": "事前にブレイクラインを引き、アラートを設定して監視を続ける",
+            "avoid": "トレンド転換確認前の思いつきの先回りフルポジション",
+            "trigger": "ベース上限の明白な上抜けと相対強度(RS)の急上昇",
+            "warning": "ベース下限の割り込み、悪決算による窓開け下落",
+            "conf": "medium" if total_score >= 50 else "low",
+            "bg": "rgba(168,85,247,0.15)",
+            "border": "#a855f7"
+        },
+        "event_wait": {
+            "best": "イベント（決算発表等）を無事通過した後の値動きを確認してからエントリー",
+            "avoid": "イベント前の「ギャンブル的な決算跨ぎエントリー」",
+            "trigger": "イベント通過後に悪材料出尽くしで上昇、または好決算後の横ばい保持",
+            "warning": "ガイダンス下方修正や、サポートラインを大きく割るギャップダウン",
+            "conf": "medium",
+            "bg": "rgba(245,158,11,0.15)",
+            "border": "#f59e0b"
+        },
+        "avoid": {
+            "best": "見送り。他の有望なトレンド形成銘柄へ資金を向ける",
+            "avoid": "「安くなってきたから」という理由での逆張り買い",
+            "trigger": "週足ベースでのStage 2初期シグナルが明確に出るまで待機",
+            "warning": "下落トレンドの継続、恒常的なRSの下落",
+            "conf": "high" if trend < 35 else "medium",
+            "bg": "rgba(239,68,68,0.15)",
+            "border": "#ef4444"
+        }
+    }
+    
+    act_data = actions.get(pb_type, actions["avoid"])
+    conf_level = act_data["conf"]
+    conf_label = {"high": "高確信", "medium": "中程度の確信", "low": "低確信"}.get(conf_level, "不明")
+
+    return {
+        "stock_playbook_type": pb_type,
+        "stock_playbook_type_label_ja": label_ja,
+        "playbook_confidence": conf_level,
+        "playbook_confidence_label_ja": conf_label,
+        "secondary_type": secondary_type,
+        "secondary_type_label_ja": secondary_label,
+        "playbook_reason": reason,
+        "best_action": act_data["best"],
+        "avoid_action": act_data["avoid"],
+        "trigger_condition": act_data["trigger"],
+        "warning_condition": act_data["warning"],
+        "playbook_flags": flags,
+        "color_bg": act_data["bg"],
+        "color_border": act_data["border"],
+        "comment": f"現在の状況は【{label_ja}】です。「{act_data['best']}」を基本戦略としてください。"
+    }
+
+@st.cache_data(ttl=1800)
 def calculate_scenario_expected_value(ticker: str, data: dict, cio_inputs: dict) -> dict:
     """
     Bull / Base / Bear の3シナリオから期待値（Expected Value）とリスクリワード（RR）を算出する。
@@ -4839,8 +4973,8 @@ def render_stock_analyzer():
             st.markdown(f'<div class="company-sector">{data["sector_display"]} | {data["industry_display"]} | {data["exchange"]}</div>', unsafe_allow_html=True)
             
             # ─── タブ切り替え ───
-            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_sd, tab_val, tab_scenario, tab_event, tab_risk, tab_cio, tab_ai_final = st.tabs(
-                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "⚖️ 需給分析", "📏 バリュエーション帯", "🎲 シナリオ分析", "📅 イベントリスク", "🛡️ リスク/予想", "🎯 CIO判断", "✅ AIジャッジ"]
+            tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_sd, tab_val, tab_scenario, tab_event, tab_risk, tab_cio, tab_playbook, tab_ai_final = st.tabs(
+                ["📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "⚖️ 需給分析", "📏 バリュエーション帯", "🎲 シナリオ分析", "📅 イベントリスク", "🛡️ リスク/予想", "🎯 CIO判断", "🗂️ 銘柄タイプ", "✅ AIジャッジ"]
             )
 
             # 1. 基本情報
@@ -6691,7 +6825,52 @@ def render_stock_analyzer():
 
                 st.caption("⚠️ 本ダッシュボードは情報提供を目的としたものであり、特定の投資行動を推奨するものではありません。投資判断はご自身の責任でお願いいたします。")
 
-            # 10. AI最終ジャッジ
+            # 10. 銘柄タイプ分類 (Stock Playbook)
+            with tab_playbook:
+                st.divider()
+                st.markdown('<div class="section-title">🗂️ 銘柄タイプ・戦略分類 (Stock Playbook)</div>', unsafe_allow_html=True)
+                st.caption("対象銘柄が現在どのタイプの戦術に適しているかを分類し、具体的な行動指針を提示します。")
+                
+                with st.spinner("戦術の分類判定中..."):
+                    cio_base_inputs = build_cio_decision_inputs(ticker)
+                    playbook_res = determine_stock_playbook(ticker, cio_base_inputs)
+                
+                pb_ja = playbook_res["stock_playbook_type_label_ja"]
+                conf_ja = playbook_res["playbook_confidence_label_ja"]
+                bg_col = playbook_res.get("color_bg", "rgba(255,255,255,0.05)")
+                bd_col = playbook_res.get("color_border", "#64748b")
+                
+                st.markdown(f"""
+                <div style="background:{bg_col}; border-left:6px solid {bd_col}; padding:20px; border-radius:8px; margin-bottom:20px;">
+                    <div style="font-size:0.85rem; color:#94a3b8; margin-bottom:4px;">推奨プレイブック - 確信度: {conf_ja}</div>
+                    <div style="color:{bd_col}; font-size:2rem; font-weight:800; margin-bottom:8px;">{pb_ja}</div>
+                    <div style="font-size:1.05rem; color:#e2e8f0;">{playbook_res['comment']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                if playbook_res["secondary_type"]:
+                    st.info(f"💡 **補足:** 本来のトレンドは「{playbook_res['secondary_type_label_ja']}」ですが、リスク要因により現在の分類が優先されています。")
+                
+                col_pb1, col_pb2 = st.columns(2)
+                with col_pb1:
+                    st.markdown("#### ✅ 判定理由")
+                    for rsn in playbook_res["playbook_reason"]:
+                        st.markdown(f"- {rsn}")
+                with col_pb2:
+                    st.markdown("#### 🎯 特徴フラグ")
+                    for flg in playbook_res["playbook_flags"]:
+                        st.markdown(f"- `{flg}`")
+                        
+                st.divider()
+                st.markdown("#### 🧭 行動指針 (Action Plan)")
+                st.success(f"**👍 最善の行動:**\n\n{playbook_res['best_action']}")
+                st.error(f"**🚫 避けるべき行動:**\n\n{playbook_res['avoid_action']}")
+                
+                st.markdown("#### ⚡ 発動・撤退条件")
+                st.info(f"**🟢 発動(トリガー)条件:** {playbook_res['trigger_condition']}")
+                st.warning(f"**⚠️ 無効化(警告)条件:** {playbook_res['warning_condition']}")
+
+            # 11. AI最終ジャッジ
             with tab_ai_final:
                 st.divider()
                 st.markdown('<div class="section-title">✅ AI 最終ジャッジ (Gemini 定型プロンプト出力)</div>', unsafe_allow_html=True)
