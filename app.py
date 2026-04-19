@@ -890,6 +890,76 @@ def get_translated_summary(summary_text: str) -> str:
 # データ取得
 # ─────────────────────────────────────────────
 
+def fetch_next_earnings_date(ticker: str) -> dict:
+    """
+    yfinanceを用いて次回決算日を取得し、結果と状態を返す。
+    取得元と失敗理由を明示的にし、タブ間での取得のズレを防ぐ。
+    """
+    import pandas as pd
+    import yfinance as yf
+    
+    result = {
+        "earnings_date": None,
+        "source": "none",
+        "status": "missing",
+        "message": "取得できませんでした"
+    }
+    
+    try:
+        stock = yf.Ticker(ticker)
+        
+        # 1. stock.calendar (優先)
+        try:
+            cal = stock.calendar
+            if isinstance(cal, dict) and "Earnings Date" in cal:
+                raw_d = cal["Earnings Date"]
+                val = raw_d[0] if isinstance(raw_d, list) else raw_d
+                if pd.notna(val):
+                    result["earnings_date"] = pd.Timestamp(val).date()
+                    result["source"] = "calendar"
+                    result["status"] = "ok"
+                    result["message"] = "calendar (dict) から取得"
+                    return result
+            elif hasattr(cal, "iloc") and not cal.empty:
+                val = cal.iloc[0, 0]
+                if pd.notna(val):
+                    result["earnings_date"] = pd.Timestamp(val).date()
+                    result["source"] = "calendar"
+                    result["status"] = "ok"
+                    result["message"] = "calendar (dataframe) から取得"
+                    return result
+        except Exception as e:
+            result["message"] = f"calendar 取得エラー: {str(e)}"
+            
+        # 2. stock.earnings_dates (フォールバック)
+        try:
+            ed = stock.earnings_dates
+            if ed is not None and not ed.empty:
+                today = pd.Timestamp.now(tz=ed.index.tz).normalize()
+                future_idx = ed.index[ed.index >= today]
+                if not future_idx.empty:
+                    result["earnings_date"] = future_idx[0].date()  # 最も近い未来日 (昇順なら0番目だが、yfinanceは降順の場合がある。一応一番近いものを取る)
+                    # yfinance の recent earnings_dates は降順 (新しい日付ほど上) かもしれないので
+                    # future_idx[-1] にするのが一般的な一番近い未来日。
+                    # Wait, if future dates are eg: [2025-05-15, 2024-05-15] then [-1] is smallest if descending,
+                    # index >= today -> keeps order. Let's just use minimum date in future_idx.
+                    result["earnings_date"] = min(d.date() for d in future_idx)
+                    
+                    result["source"] = "earnings_dates"
+                    result["status"] = "ok"
+                    result["message"] = "earnings_dates から最も近い未来日を取得"
+                    return result
+                else:
+                    result["message"] = "earnings_dates 内に未来の決算日がありません"
+        except Exception as e:
+            if "message" not in result or result["message"] == "取得できませんでした" or "calendar 取得エラー" in result["message"]:
+                result["message"] = f"earnings_dates 取得エラー: {str(e)}"
+                
+    except Exception as e:
+        result["message"] = f"Ticker 取得エラー: {str(e)}"
+        
+    return result
+
 @st.cache_data(ttl=300)
 def fetch_stock_data(ticker: str) -> tuple[dict | None, str | None]:
     """yfinance を使って株価指標を取得する。詳細データが取得できない場合は基本データで補完する。"""
@@ -975,17 +1045,11 @@ def fetch_stock_data(ticker: str) -> tuple[dict | None, str | None]:
             if not res.get(k) or res.get(k) == "—":
                 res[k] = "—"
 
-        # 決算日の取得 (calendar属性から)
-        try:
-            cal = stock.calendar # ticker.calendar から修正
-            if isinstance(cal, dict) and "Earnings Date" in cal:
-                res["earnings_date"] = cal["Earnings Date"][0]
-            elif hasattr(cal, "iloc") and not cal.empty:
-                res["earnings_date"] = cal.iloc[0, 0]
-            else:
-                res["earnings_date"] = None
-        except:
-            res["earnings_date"] = None
+        # 決算日の取得 (専用関数へ集約)
+        ed_info = fetch_next_earnings_date(ticker)
+        res["earnings_date"] = ed_info["earnings_date"]
+        res["earnings_date_source"] = ed_info["source"]
+        res["earnings_date_message"] = ed_info["message"]
 
         # 日本語化処理
         res["sector_display"] = SECTOR_JA_MAP.get(res["sector"], res["sector"])
@@ -3412,38 +3476,8 @@ def fetch_event_risk_data(ticker: str) -> dict:
         result["beta"]     = info.get("beta")
 
         # ── 次回決算日 ────────────────────────────────────
-        earnings_date = None
-        try:
-            cal = stock.calendar
-            if cal is not None and not cal.empty:
-                for key in ["Earnings Date", "earningsDate"]:
-                    if key in cal.index:
-                        raw = cal.loc[key]
-                        # 値が Timestamp の場合と配列の場合に両対応
-                        vals = raw.values if hasattr(raw, "values") else [raw]
-                        future = [
-                            v for v in vals
-                            if pd.notna(v) and pd.Timestamp(v).date() >= pd.Timestamp.now().date()
-                        ]
-                        if future:
-                            earnings_date = min(pd.Timestamp(v).date() for v in future)
-                        break
-        except Exception:
-            pass
-
-        # calendar で取れなかった場合 earnings_dates から取得
-        if earnings_date is None:
-            try:
-                ed = stock.earnings_dates
-                if ed is not None and not ed.empty:
-                    today = pd.Timestamp.now().normalize()
-                    future_idx = ed.index[ed.index >= today]
-                    if not future_idx.empty:
-                        earnings_date = future_idx[-1].date()  # 最も近い未来日
-            except Exception:
-                pass
-
-        result["earnings_date"] = earnings_date
+        ed_info = fetch_next_earnings_date(ticker)
+        result["earnings_date"] = ed_info["earnings_date"]
 
         # ── 配当落ち日 ────────────────────────────────────
         try:
@@ -5026,6 +5060,61 @@ def render_top_summary_cards(ticker: str, data: dict):
         # 全体を壊さないようにフォールバック
         pass
 
+def render_trading_decision_summary(ticker: str, data: dict):
+    """
+    タブ展開前に、売買判断に必要な要点を短く箇条書きでまとめるセクション。
+    """
+    try:
+        import streamlit as st
+        cio_inputs = build_cio_decision_inputs(ticker)
+        
+        # 1. ステージ
+        stage_text = "取得不可"
+        if "weinstein" in cio_inputs.get("details", {}):
+            ws = cio_inputs["details"]["weinstein"]
+            stage_text = f"{ws.get('stage', '')} {ws.get('sub_stage', '')}".strip()
+            
+        # 2. RS
+        rs_text = "取得不可"
+        if "rs" in cio_inputs.get("details", {}):
+            status_map = {"strong": "強い (Strong)", "neutral": "中立 (Neutral)", "weak": "弱い (Weak)"}
+            rs_status = cio_inputs["details"]["rs"].get("rs_status", "neutral")
+            rs_text = status_map.get(rs_status, "不明")
+            
+        # 3. エントリー
+        entry_text = "取得不可"
+        if "entry_timing" in cio_inputs.get("details", {}):
+            entry_text = cio_inputs["details"]["entry_timing"].get("entry_status_label_ja", "不明")
+            
+        # 4. イベント
+        evt_score = cio_inputs.get("scores", {}).get("event_safety_score", 50)
+        if evt_score >= 70: event_text = "通過済みまたは低リスク"
+        elif evt_score >= 40: event_text = "直近イベントあり注意"
+        else: event_text = "高リスク（決算直前など）"
+            
+        # 5. シナリオ期待値
+        scenario_res = calculate_scenario_expected_value(ticker, data, cio_inputs)
+        ev_text = "取得不可"
+        if scenario_res and scenario_res.get("expected_value_status") != "error":
+            ev_text = f"ベースケース上値 {scenario_res.get('base_upside_pct', 0):+.1f}% (総合期待値 {scenario_res.get('expected_value_pct', 0):+.1f}%)"
+            
+        # 6. 銘柄タイプ (Playbook)
+        pb = determine_stock_playbook(ticker, cio_inputs)
+        pb_text = pb.get("stock_playbook_type_label_ja", "不明")
+
+        st.markdown("##### 📝 現在の売買判断サマリー")
+        with st.container(border=True):
+            st.markdown(f"""
+- **現在のトレンド**: {stage_text}
+- **RS (相対強度)**: {rs_text}
+- **エントリー判定**: {entry_text}
+- **銘柄タイプ**: {pb_text}
+- **イベントリスク**: {event_text}
+- **シナリオ期待値**: {ev_text}
+            """)
+    except Exception as e:
+        pass
+
 def get_analysis_display_mode() -> str:
     """
     かんたんモード/詳細モード の表示切替用UIを生成し、選択されたモードを返す。
@@ -5075,6 +5164,10 @@ def render_stock_analyzer():
             # ─── タブ切り替え ───
             # ─── タブ切り替え ───
             display_mode = get_analysis_display_mode()
+            
+            # 売買判断サマリーの表示
+            render_trading_decision_summary(ticker, data)
+
             tab_basic = tab_fund = tab_chart = tab_peers = tab_canslim = tab_sepa = tab_weinstein = tab_rs = tab_entry = tab_earnings = tab_sd = tab_val = tab_scenario = tab_event = tab_risk = tab_cio = tab_playbook = tab_ai_final = None
 
             if display_mode == "かんたんモード":
@@ -5084,9 +5177,9 @@ def render_stock_analyzer():
                 tab_basic, tab_chart, tab_weinstein, tab_rs, tab_entry, tab_cio, tab_ai_final = tabs
             else:
                 tabs = st.tabs([
-                    "📊 基本情報", "📈 財務/バリュ", "🔍 チャート", "🏢 競合比較", "💰 CAN SLIM", "🏆 SEPA分析", "📈 ステージ分析", "⚡ RS分析", "⏱ エントリー判定", "🧾 決算品質", "⚖️ 需給分析", "📏 バリュエーション帯", "🎲 シナリオ分析", "📅 イベントリスク", "🛡️ リスク/予想", "🎯 CIO判断", "🗂️ 銘柄タイプ", "✅ AIジャッジ"
+                    "📊 基本情報", "🔍 チャート", "📈 財務/バリュ", "🏢 競合比較", "📈 ステージ分析", "🏆 SEPA分析", "⚡ RS分析", "⏱ エントリー判定", "🎲 シナリオ分析", "🗂️ 銘柄タイプ", "🧾 決算品質", "⚖️ 需給分析", "📏 バリュエーション帯", "📅 イベントリスク", "🛡️ リスク/予想", "💰 CAN SLIM", "🎯 CIO判断", "✅ AIジャッジ"
                 ])
-                (tab_basic, tab_fund, tab_chart, tab_peers, tab_canslim, tab_sepa, tab_weinstein, tab_rs, tab_entry, tab_earnings, tab_sd, tab_val, tab_scenario, tab_event, tab_risk, tab_cio, tab_playbook, tab_ai_final) = tabs
+                (tab_basic, tab_chart, tab_fund, tab_peers, tab_weinstein, tab_sepa, tab_rs, tab_entry, tab_scenario, tab_playbook, tab_earnings, tab_sd, tab_val, tab_event, tab_risk, tab_canslim, tab_cio, tab_ai_final) = tabs
 
             # 1. 基本情報
             if tab_basic:
@@ -6467,7 +6560,7 @@ def render_stock_analyzer():
                 with tab_event:
                     st.divider()
                     st.markdown('<div class="section-title">📅 イベントリスク判定 (Event Risk)</div>', unsafe_allow_html=True)
-                    st.caption("激算接近・マクロイベント・セクター特性の3軸から「今購入すべきタイミングか」を判定します。")
+                    st.caption("決算接近・マクロイベント・セクター特性の3軸から「今購入すべきタイミングか」を判定します。")
 
                     with st.spinner("イベントリスクデータを解析中..."):
                         er_raw  = fetch_event_risk_data(ticker)
@@ -6537,7 +6630,7 @@ def render_stock_analyzer():
                     st.markdown("#### 📌 リスク要因3軸")
                     ec1, ec2, ec3 = st.columns(3)
 
-                    # 軸1: 激算リスク
+                    # 軸1: 決算リスク
                     with ec1:
                         d2e    = er.get("days_to_earnings")
                         el     = er.get("earnings_risk_level", "unknown")
@@ -6546,7 +6639,7 @@ def render_stock_analyzer():
                                   "unknown": "#94a3b8"}.get(el, "#94a3b8")
                         st.markdown(
                             f'<div style="background:rgba(255,255,255,0.04); border-radius:10px; padding:14px;">'
-                            f'<div style="font-size:0.8rem; color:#94a3b8;">📄 激算リスク</div>'
+                            f'<div style="font-size:0.8rem; color:#94a3b8;">📄 決算リスク</div>'
                             f'<div style="font-size:1.0rem; font-weight:700; color:{el_col}; margin-top:4px;">'
                             f'{er.get("earnings_risk_label_ja", "—")}</div>'
                             f'<div style="font-size:0.8rem; color:#64748b; margin-top:4px;">'
