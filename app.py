@@ -292,7 +292,7 @@ with st.sidebar:
     st.title("Momentum Master")
     st.radio(
         "モード選択",
-        ["個別銘柄分析", "テーマ・エクスプローラー", "セクター・アナライザー"],
+        ["個別銘柄分析", "テーマ・エクスプローラー", "セクター・アナライザー", "🔥 短期おすすめ銘柄"],
         key="app_mode"
     )
     st.divider()
@@ -1119,6 +1119,222 @@ def get_translated_summary(summary_text: str) -> str:
 # ─────────────────────────────────────────────
 # データ取得
 # ─────────────────────────────────────────────
+
+def load_json_snapshot(path: str) -> dict | None:
+    """JSONファイルを共通的に読み込む。存在しない、またはエラー時は None を返す。"""
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            # バッチ側でのキー名 ('data' or 'items') の差異を吸収
+            if "items" not in data and "data" in data:
+                data["items"] = data["data"]
+            return data
+    except Exception as e:
+        st.warning(f"Snapshot loading error ({path}): {e}")
+        return None
+
+def load_short_term_snapshot() -> dict | None:
+    """短期スナップショットJSONを読み込む。"""
+    return load_json_snapshot("data/short_term_snapshot.json")
+
+def load_long_term_snapshot() -> dict | None:
+    """中長期スナップショットJSONを読み込む。"""
+    return load_json_snapshot("data/long_term_snapshot.json")
+
+def get_short_term_snapshot_item(ticker: str) -> dict | None:
+    """短期スナップショットから該当銘柄を抽出する。"""
+    snap = load_short_term_snapshot()
+    if not snap or "items" not in snap:
+        return None
+    for item in snap["items"]:
+        if item.get("ticker") == ticker:
+            return item
+    return None
+
+def get_long_term_snapshot_item(ticker: str) -> dict | None:
+    """中長期スナップショットから該当銘柄を抽出する。"""
+    snap = load_long_term_snapshot()
+    if not snap or "items" not in snap:
+        return None
+    for item in snap["items"]:
+        if item.get("ticker") == ticker:
+            return item
+    return None
+def get_top_short_term_ideas(limit: int = 10) -> pd.DataFrame:
+    """短期スナップショットから注目銘柄の上位10件をスコアリングして返す。"""
+    import pandas as pd
+    snap = load_short_term_snapshot()
+    
+    if not snap or "items" not in snap or not snap["items"]:
+        return pd.DataFrame()
+        
+    items = snap["items"]
+    
+    # スコアリングロジック
+    for item in items:
+        # すでにスコアがある場合はそれを使用 (優先順位)
+        score = item.get("short_attention_score") or item.get("short_setup_score") or item.get("breakout_score")
+        
+        score_factors = []
+        if score is None:
+            # 簡易スコアリング
+            score = 0
+            # 1. 前日比 (ポジティブなら加点, ネガティブなら減点)
+            change = item.get("change_pct", 0) or 0
+            change_score = min(max(change * 5, -20), 40) # -20 ~ +40
+            score += change_score
+            if change_score > 10: score_factors.append(("モメンタム", change_score))
+            
+            # 2. 52週高値位置 (近いほど加点)
+            dist_high = item.get("dist_from_52w_high", -100) or -100
+            dist_score = 0
+            if dist_high > -5: dist_score = 40
+            elif dist_high > -10: dist_score = 20
+            elif dist_high > -20: dist_score = 10
+            score += dist_score
+            if dist_score > 0: score_factors.append(("高値圏", dist_score))
+            
+            # 3. 出来高 (流動性)
+            vol = item.get("avg_vol_3m", 0) or 0
+            vol_score = 0
+            if vol > 1_000_000: vol_score = 20
+            elif vol > 500_000: vol_score = 10
+            score += vol_score
+            if vol_score > 0: score_factors.append(("流動性", vol_score))
+            
+            # 最終スコアを 0-100 に正規化 (簡易)
+            score = int(min(max(score, 0), 100))
+        else:
+            score = int(score)
+            
+        item["score"] = score
+        
+        # 理由の決定
+        if score > 50 and score_factors:
+            main_factor = max(score_factors, key=lambda x: x[1])[0]
+            if main_factor == "高値圏": item["reason"] = "🚀 52週高値圏・ブレイク期待"
+            elif main_factor == "モメンタム": item["reason"] = "📈 強い短期モメンタム"
+            elif main_factor == "流動性": item["reason"] = "💎 高い流動性と注目度"
+            else: item["reason"] = "テクニカル位置良好"
+        elif score > 70:
+            item["reason"] = "テクニカル位置良好"
+        else:
+            item["reason"] = "押し目・反発待ち"
+
+        # 簡易ステータス/ラベル生成
+        if item.get("dist_from_52w_high", -100) > -3:
+            item["setup_label"] = "🚀 Breakout Watch"
+        elif item.get("change_pct", 0) > 2:
+            item["setup_label"] = "📈 Strong Momentum"
+        else:
+            item["setup_label"] = "👀 Monitor"
+
+        item["comment"] = item["reason"] # 既存のcommentもreasonで上書き
+
+    # DataFrame化してソート
+    df = pd.DataFrame(items)
+    df = df.sort_values(by="score", ascending=False).head(limit)
+    
+    # 表示用の列選択と成型
+    display_df = pd.DataFrame({
+        "Rank": range(1, len(df) + 1),
+        "Ticker": df["ticker"],
+        "Name": df["name"],
+        "Price": df["price"].apply(lambda x: f"${x:,.2f}" if isinstance(x, (int, float)) else x),
+        "Change %": df["change_pct"].apply(lambda x: f"{x:+.2f}%" if x is not None else "—"),
+        "Score": df["score"],
+        "Setup": df["setup_label"],
+        "Comment": df["comment"]
+    })
+    
+    return display_df
+
+
+def render_top_short_term_ideas(limit: int = 10):
+    """短期おすすめ銘柄をリッチに表示する。"""
+    st.markdown("<h3>🔥 短期注目銘柄ランキング (Daily Snapshot)</h3>", unsafe_allow_html=True)
+    st.markdown("<p style='color: #94a3b8; font-size: 0.9rem;'>日次バッチで解析されたデータに基づき、短期的なモメンタムとセットアップの良さから抽出した上位10銘柄です。</p>", unsafe_allow_html=True)
+    
+    df = get_top_short_term_ideas(limit)
+        
+    if df.empty:
+        st.info("💡 短期スナップショットデータがまだ生成されていないか、読み込めません。バッチ処理の完了をお待ちください。")
+        return
+
+    # 上位3件をカード形式でハイライト
+    top3 = df.head(min(3, len(df)))
+    cols = st.columns(min(3, len(df)))
+    for i, (_, row) in enumerate(top3.iterrows()):
+        # スコアに応じた色を決定
+        score_val = int(row['Score'])
+        score_color = "#94a3b8" # デフォルト (Slate)
+        if score_val >= 80: score_color = "#10b981" # Emerald
+        elif score_val >= 60: score_color = "#f59e0b" # Amber
+        
+        with cols[i]:
+            st.markdown(f"""
+            <div style="background: rgba(255,255,255,0.05); border: 1px solid {score_color}44; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 10px; position: relative;">
+                <div style="position: absolute; top: 10px; right: 10px; background: {score_color}22; color: {score_color}; padding: 2px 8px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; border: 1px solid {score_color}44;">
+                    SCORE {score_val}
+                </div>
+                <div style="font-size: 0.8rem; color: #94a3b8; font-weight: 700; margin-bottom: 5px;">RANK {row['Rank']}</div>
+                <div style="font-size: 1.8rem; font-weight: 800; color: #ffffff;">{row['Ticker']}</div>
+                <div style="font-size: 0.9rem; color: #94a3b8; margin-bottom: 10px;">{row['Name']}</div>
+                <div style="font-size: 1.2rem; font-weight: 700; color: #10b981;">{row['Change %']}</div>
+                <div style="margin-top: 10px; font-size: 0.85rem; background: {score_color}22; color: {score_color}; padding: 4px 12px; border-radius: 20px; display: inline-block;">{row['Setup']}</div>
+                <div style="margin-top: 8px; font-size: 0.8rem; color: #e2e8f0;">{row['Comment']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.button(
+                "詳細分析 ➔", 
+                key=f"btn_card_{row['Ticker']}", 
+                on_click=handle_detail_view, 
+                args=(row['Ticker'],),
+                use_container_width=True
+            )
+    
+    st.markdown("<div style='margin: 30px 0;'></div>", unsafe_allow_html=True)
+    
+    # 4位以降のリスト表示
+    if len(df) > 3:
+        st.markdown("<h4 style='font-size: 1.1rem; margin-bottom: 15px; border-left: 4px solid #38bdf8; padding-left: 10px;'>📋 その他の注目銘柄</h4>", unsafe_allow_html=True)
+        for _, row in df.iloc[3:].iterrows():
+            # スコアに応じた色を決定
+            score_val = int(row['Score'])
+            score_color = "#94a3b8"
+            if score_val >= 80: score_color = "#10b981"
+            elif score_val >= 60: score_color = "#f59e0b"
+            
+            with st.container():
+                c1, c2, c3, c4, c5, c6 = st.columns([0.6, 1.2, 3, 1.5, 1.5, 1.5])
+                c1.markdown(f"<div style='padding-top:8px; color:#94a3b8;'>#{row['Rank']}</div>", unsafe_allow_html=True)
+                c2.markdown(f"<div style='padding-top:8px; font-weight:700; color:#f8fafc;'>{row['Ticker']}</div>", unsafe_allow_html=True)
+                c3.markdown(f"<div style='padding-top:3px; font-size:0.85rem; color:#f8fafc; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'>{row['Name']}<br><span style='font-size:0.75rem; color:#94a3b8;'>{row['Comment']}</span></div>", unsafe_allow_html=True)
+                
+                # 騰落率の色分け
+                chg_color = "#10b981" if "+" in str(row['Change %']) else "#ef4444"
+                if "—" in str(row['Change %']): chg_color = "#94a3b8"
+                c4.markdown(f"<div style='padding-top:8px; color:{chg_color}; font-weight:600;'>{row['Change %']}</div>", unsafe_allow_html=True)
+                
+                # スコアをバッジ風に
+                c5.markdown(f"<div style='padding-top:8px;'><span style='background:{score_color}22; color:{score_color}; border:1px solid {score_color}44; padding:2px 10px; border-radius:4px; font-size:0.85rem; font-weight:700;'>{score_val}</span></div>", unsafe_allow_html=True)
+                
+                c6.button(
+                    "詳細 ➔", 
+                    key=f"btn_list_{row['Ticker']}", 
+                    on_click=handle_detail_view, 
+                    args=(row['Ticker'],),
+                    use_container_width=True
+                )
+                st.markdown("<div style='border-bottom: 1px solid rgba(255,255,255,0.05); margin: 5px 0 10px 0;'></div>", unsafe_allow_html=True)
+
+
+    
+    st.caption("※データは日次バッチ実行時点のものです。最新のリアルタイム価格は個別銘柄分析で確認してください。")
+
+
 
 def fetch_next_earnings_date(ticker: str) -> dict:
     """
@@ -8142,5 +8358,7 @@ if st.session_state.app_mode == "テーマ・エクスプローラー":
     render_theme_explorer()
 elif st.session_state.app_mode == "セクター・アナライザー":
     render_sector_analyzer()
+elif st.session_state.app_mode == "🔥 短期おすすめ銘柄":
+    render_top_short_term_ideas()
 else:
     render_stock_analyzer()

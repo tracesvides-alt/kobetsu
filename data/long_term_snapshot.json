@@ -1,0 +1,125 @@
+{
+  "data": [
+    {
+      "ticker": "NVDA",
+      "name": "NVIDIA Corporation",
+      "market_cap": 4819193430016,
+      "sector": "Technology",
+      "pe_ratio": 40.465286,
+      "roe": 1.01485,
+      "revenue_growth": 0.732,
+      "profit_margins": 0.55603004,
+      "dividend_yield": 0.02,
+      "last_updated": "2026-04-21T00:04:36.729862"
+    },
+    {
+      "ticker": "PLTR",
+      "name": "Palantir Technologies Inc.",
+      "market_cap": 345357942784,
+      "sector": "Technology",
+      "pe_ratio": 229.20634,
+      "roe": 0.25983,
+      "revenue_growth": 0.7,
+      "profit_margins": 0.36310002,
+      "dividend_yield": null,
+      "last_updated": "2026-04-21T00:04:38.130300"
+    },
+    {
+      "ticker": "CRWD",
+      "name": "CrowdStrike Holdings, Inc.",
+      "market_cap": 108137250816,
+      "sector": "Technology",
+      "pe_ratio": null,
+      "roe": -0.04137,
+      "revenue_growth": 0.233,
+      "profit_margins": -0.033770002,
+      "dividend_yield": null,
+      "last_updated": "2026-04-21T00:04:39.592212"
+    },
+    {
+      "ticker": "AMD",
+      "name": "Advanced Micro Devices, Inc.",
+      "market_cap": 446153752576,
+      "sector": "Technology",
+      "pe_ratio": 104.44466,
+      "roe": 0.07082,
+      "revenue_growth": 0.341,
+      "profit_margins": 0.12515001,
+      "dividend_yield": null,
+      "last_updated": "2026-04-21T00:04:41.097581"
+    },
+    {
+      "ticker": "AVGO",
+      "name": "Broadcom Inc.",
+      "market_cap": 1886031314944,
+      "sector": "Technology",
+      "pe_ratio": 77.69336,
+      "roe": 0.33370999,
+      "revenue_growth": 0.295,
+      "profit_margins": 0.36571997,
+      "dividend_yield": 0.64,
+      "last_updated": "2026-04-21T00:04:42.514238"
+    },
+    {
+      "ticker": "META",
+      "name": "Meta Platforms, Inc.",
+      "market_cap": 1697443741696,
+      "sector": "Communication Services",
+      "pe_ratio": 28.479559,
+      "roe": 0.30238,
+      "revenue_growth": 0.238,
+      "profit_margins": 0.30084,
+      "dividend_yield": 0.3,
+      "last_updated": "2026-04-21T00:04:43.987074"
+    },
+    {
+      "ticker": "MSFT",
+      "name": "Microsoft Corporation",
+      "market_cap": 3102144462848,
+      "sector": "Technology",
+      "pe_ratio": 26.119057,
+      "roe": 0.34390998,
+      "revenue_growth": 0.167,
+      "profit_margins": 0.39044,
+      "dividend_yield": 0.86,
+      "last_updated": "2026-04-21T00:04:45.431435"
+    },
+    {
+      "ticker": "GOOGL",
+      "name": "Alphabet Inc.",
+      "market_cap": 4078745681920,
+      "sector": "Communication Services",
+      "pe_ratio": 31.219444,
+      "roe": 0.35705003,
+      "revenue_growth": 0.18,
+      "profit_margins": 0.32810003,
+      "dividend_yield": 0.25,
+      "last_updated": "2026-04-21T00:04:46.848057"
+    },
+    {
+      "ticker": "AAPL",
+      "name": "Apple Inc.",
+      "market_cap": 3997468459008,
+      "sector": "Technology",
+      "pe_ratio": 34.47085,
+      "roe": 1.5202099,
+      "revenue_growth": 0.157,
+      "profit_margins": 0.27037,
+      "dividend_yield": 0.38,
+      "last_updated": "2026-04-21T00:04:48.432727"
+    },
+    {
+      "ticker": "TSLA",
+      "name": "Tesla, Inc.",
+      "market_cap": 1462247620608,
+      "sector": "Consumer Cyclical",
+      "pe_ratio": 360.8148,
+      "roe": 0.049250003,
+      "revenue_growth": -0.031,
+      "profit_margins": 0.040009998,
+      "dividend_yield": null,
+      "last_updated": "2026-04-21T00:04:49.986801"
+    }
+  ],
+  "count": 10
+}

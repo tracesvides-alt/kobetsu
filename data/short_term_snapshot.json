@@ -1,0 +1,95 @@
+{
+  "data": [
+    {
+      "ticker": "NVDA",
+      "name": "NVIDIA Corporation",
+      "price": 198.2799,
+      "change_pct": -1.6858885362951215,
+      "dist_from_52w_high": -6.555492718789768,
+      "avg_vol_3m": 176620067,
+      "last_updated": "2026-04-21T00:04:36.729862"
+    },
+    {
+      "ticker": "PLTR",
+      "name": "Palantir Technologies Inc.",
+      "price": 144.38,
+      "change_pct": -1.3730446068720426,
+      "dist_from_52w_high": -30.425983037779492,
+      "avg_vol_3m": 52840022,
+      "last_updated": "2026-04-21T00:04:38.130300"
+    },
+    {
+      "ticker": "CRWD",
+      "name": "CrowdStrike Holdings, Inc.",
+      "price": 426.385,
+      "change_pct": 0.5743601839839574,
+      "dist_from_52w_high": -24.786558475921684,
+      "avg_vol_3m": 4143509,
+      "last_updated": "2026-04-21T00:04:39.592212"
+    },
+    {
+      "ticker": "AMD",
+      "name": "Advanced Micro Devices, Inc.",
+      "price": 273.645,
+      "change_pct": -1.7044434067315706,
+      "dist_from_52w_high": -4.855533534995315,
+      "avg_vol_3m": 37444867,
+      "last_updated": "2026-04-21T00:04:41.097581"
+    },
+    {
+      "ticker": "AVGO",
+      "name": "Broadcom Inc.",
+      "price": 397.79,
+      "change_pct": -2.1523097358193577,
+      "dist_from_52w_high": -4.056824485661226,
+      "avg_vol_3m": 26360786,
+      "last_updated": "2026-04-21T00:04:42.514238"
+    },
+    {
+      "ticker": "META",
+      "name": "Meta Platforms, Inc.",
+      "price": 668.7,
+      "change_pct": -2.8828697988526497,
+      "dist_from_52w_high": -16.018838304552585,
+      "avg_vol_3m": 16294922,
+      "last_updated": "2026-04-21T00:04:43.987074"
+    },
+    {
+      "ticker": "MSFT",
+      "name": "Microsoft Corporation",
+      "price": 417.3825,
+      "change_pct": -1.279003760732289,
+      "dist_from_52w_high": -24.85687280583312,
+      "avg_vol_3m": 38035475,
+      "last_updated": "2026-04-21T00:04:45.431435"
+    },
+    {
+      "ticker": "GOOGL",
+      "name": "Alphabet Inc.",
+      "price": 337.17,
+      "change_pct": -1.319948489815026,
+      "dist_from_52w_high": -3.3896848137535796,
+      "avg_vol_3m": 32924755,
+      "last_updated": "2026-04-21T00:04:46.848057"
+    },
+    {
+      "ticker": "AAPL",
+      "name": "Apple Inc.",
+      "price": 271.975,
+      "change_pct": 0.6457462161862049,
+      "dist_from_52w_high": -5.7670986071651225,
+      "avg_vol_3m": 46459459,
+      "last_updated": "2026-04-21T00:04:48.432727"
+    },
+    {
+      "ticker": "TSLA",
+      "name": "Tesla, Inc.",
+      "price": 389.7184,
+      "change_pct": -2.721182167640168,
+      "dist_from_52w_high": -21.8735039993585,
+      "avg_vol_3m": 63220972,
+      "last_updated": "2026-04-21T00:04:49.986801"
+    }
+  ],
+  "count": 10
+}
